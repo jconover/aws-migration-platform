@@ -455,6 +455,7 @@ jobs:
           - terraform/modules/s3
           - terraform/modules/ecr
           - terraform/modules/ecs
+          - terraform/modules/ec2-rehost
           - terraform/modules/irsa
           - terraform/modules/iam-app
           - terraform/modules/github-oidc

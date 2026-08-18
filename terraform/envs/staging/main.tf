@@ -89,6 +89,12 @@ module "platform" {
   artifact_bucket_name          = var.artifact_bucket_name
   artifact_bucket_force_destroy = true
 
+  # Staging runs all three landing options so a workload can be moved between
+  # them during assessment without waiting for new infrastructure.
+  enable_ec2_rehost    = true
+  ec2_instance_type    = "t3.small"
+  ec2_desired_capacity = 1
+
   github_repository = var.github_repository
   github_deploy_subjects = [
     "repo:${var.github_repository}:environment:staging",

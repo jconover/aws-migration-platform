@@ -34,3 +34,5 @@ deploy/k8s/rendered.yaml
 .env
 .env.*
 .DS_Store
+
+keys/

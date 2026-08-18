@@ -1,0 +1,78 @@
+# The on-premises application, running against the on-premises database.
+# Deliberately the same image that later runs in AWS, so the migration changes
+# where it runs and what it connects to - not what it is.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-tracker
+  namespace: legacy-onprem
+  labels:
+    app.kubernetes.io/name: legacy-tracker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: legacy-tracker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: legacy-tracker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: PLACEHOLDER_ONPREM_IMAGE
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_ENVIRONMENT
+              value: onprem
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: {name: legacy-postgres, key: POSTGRES_USER}
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef: {name: legacy-postgres, key: POSTGRES_PASSWORD}
+            - name: APP_DATABASE_URL
+              value: postgresql+psycopg://$(DB_USER):$(DB_PASS)@legacy-postgres:5432/migration_tracker
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-tracker
+  namespace: legacy-onprem
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: legacy-tracker

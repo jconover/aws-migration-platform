@@ -17,6 +17,8 @@ are proven by real weight before any customer workload depends on them.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, security model, EKS vs ECS |
 | [docs/CICD-OPTIMIZATION.md](docs/CICD-OPTIMIZATION.md) | Pipeline bottlenecks and the measured rewrite |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Cutover, rollback, incident response |
+| [docs/MIGRATION-DEMO.md](docs/MIGRATION-DEMO.md) | **Runnable** on-premises Talos to AWS migration, with the verification gate |
+| [docs/BACKLOG.md](docs/BACKLOG.md) | Generated programme backlog: 5 epics, 54 stories and tasks |
 | [docs/SETUP.md](docs/SETUP.md) | Bootstrapping AWS and GitHub from scratch |
 
 ## Layout
@@ -26,11 +28,14 @@ app/                    FastAPI service (state machine, persistence, HTTP)
 tests/unit/             Pure tests, no I/O
 tests/integration/      Tests against real Postgres
 scripts/                Coverage gate, schema bootstrap
+migration/              Verification gate, backlog generator, cutover script
 terraform/
-  modules/              vpc, eks, ecs, rds, s3, ecr, irsa, iam-app, github-oidc, platform
+  modules/              vpc, eks, ecs, ec2-rehost, rds, s3, ecr, irsa,
+                        iam-app, github-oidc, platform
   envs/{staging,prod}   Environment composition
   bootstrap/            State bucket, run once per account
 deploy/k8s/             Kustomize base and per-environment overlays
+deploy/onprem/          The simulated datacentre, deployed to a Talos cluster
 .github/workflows/      ci, cd, terraform, reusable-deploy-eks, ci-baseline
 ```
 
@@ -54,6 +59,34 @@ make run            # docker compose: api + postgres
 curl localhost:8000/healthz
 curl localhost:8000/api/v1/statuses
 ```
+
+## Runnable migration
+
+A three-node bare-metal **Talos** cluster stands in for the datacentre; AWS RDS
+(or a local container when no AWS account is wired up) is the target.
+
+```bash
+./migration/scripts/migrate.sh up        # deploy the source onto Talos
+./migration/scripts/migrate.sh cutover   # snapshot -> restore -> verify
+./migration/scripts/migrate.sh down
+```
+
+The verification gate compares row counts and order-independent content
+checksums and refuses to pass unless they match. Proven against the live cluster
+to catch a silently edited field, a deleted row, and an unreachable target -
+details in [docs/MIGRATION-DEMO.md](docs/MIGRATION-DEMO.md).
+
+## Where workloads land
+
+Three targets, sibling modules against one VPC, database and policy:
+
+| Flag | Module | Lands as |
+| --- | --- | --- |
+| (default) | `modules/eks` | Kubernetes Deployment |
+| `enable_ecs` | `modules/ecs` | Fargate service |
+| `enable_ec2_rehost` | `modules/ec2-rehost` | ASG behind an internal ALB, SSM instead of SSH |
+
+Moving a workload between them is a variable change, not a rebuild.
 
 ## The service
 
@@ -86,13 +119,15 @@ Everything below was executed against this repository, not assumed.
 
 | Check | Result |
 | --- | --- |
-| Unit tests | 51 passed |
-| Integration tests (Postgres 17) | 23 passed |
-| Combined coverage | **98%** against an 80% floor |
+| Unit tests | 88 passed |
+| Integration tests (Postgres 17) | 31 passed |
+| Combined coverage | **95%** against an 80% floor |
 | Coverage gate, all four paths | pass/pass/**fail**/**fail** as designed |
 | `mypy app` (strict) | no issues, 10 source files |
 | `ruff check` + `ruff format --check` | clean |
-| Terraform `validate` + `fmt` | 13/13 stacks clean |
+| Terraform `validate` + `fmt` | 14/14 stacks clean |
+| `shellcheck` on the cutover script | 0 findings |
+| Migration demo on live Talos | 20 rows moved, gate passed; corruption + row loss both caught |
 | `actionlint` (with shellcheck) | 0 findings across 5 workflows |
 | Kustomize overlays | staging and prod render, 11 resources each |
 | Container | builds, runs healthy, serves traffic as UID 10001 |

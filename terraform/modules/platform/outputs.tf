@@ -82,3 +82,18 @@ output "ecs_task_definition_family" {
   description = "Task definition family for the deploy workflow."
   value       = var.enable_ecs ? module.ecs[0].task_definition_family : null
 }
+
+output "ec2_autoscaling_group_name" {
+  description = "ASG name when the EC2 rehost target is enabled."
+  value       = var.enable_ec2_rehost ? module.ec2_rehost[0].autoscaling_group_name : null
+}
+
+output "ec2_load_balancer_dns_name" {
+  description = "Rehost target load balancer DNS name."
+  value       = var.enable_ec2_rehost ? module.ec2_rehost[0].load_balancer_dns_name : null
+}
+
+output "ec2_session_manager_hint" {
+  description = "How to reach a rehosted instance without SSH."
+  value       = var.enable_ec2_rehost ? module.ec2_rehost[0].session_manager_command : null
+}

@@ -1,0 +1,108 @@
+#!/bin/bash
+# Bootstrap for a rehosted workload.
+#
+# The application still ships as a container - a lift-and-shift target does not
+# have to become Kubernetes to leave the datacentre. Systemd supervises it, so
+# the operational model stays familiar to the team that ran it on-premises.
+set -euo pipefail
+
+exec > >(tee /var/log/bootstrap.log | logger -t bootstrap) 2>&1
+
+echo "bootstrap starting for ${app_name} in ${environment}"
+
+dnf -y update
+dnf -y install docker awscli-2 amazon-cloudwatch-agent jq
+
+systemctl enable --now docker
+
+# Credentials are fetched from Secrets Manager at boot using the instance role.
+# Nothing sensitive is baked into the AMI or passed through user data, which is
+# readable by anything that can reach the metadata service.
+SECRET=$(aws secretsmanager get-secret-value \
+  --secret-id "${database_secret_arn}" \
+  --region "${region}" \
+  --query SecretString --output text)
+
+DB_USER=$(echo "$SECRET" | jq -r .username)
+DB_PASS=$(echo "$SECRET" | jq -r .password)
+
+install -d -m 0700 /etc/${app_name}
+cat > /etc/${app_name}/env <<ENVEOF
+APP_ENVIRONMENT=${environment}
+APP_DATABASE_URL=postgresql+psycopg://$${DB_USER}:$${DB_PASS}@${database_host}:5432/${database_name}
+ENVEOF
+chmod 0600 /etc/${app_name}/env
+
+aws ecr get-login-password --region "${region}" \
+  | docker login --username AWS --password-stdin "${registry}"
+
+docker pull "${container_image}"
+
+cat > /etc/systemd/system/${app_name}.service <<'UNITEOF'
+[Unit]
+Description=Rehosted application
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+ExecStartPre=-/usr/bin/docker rm -f APP_NAME
+ExecStart=/usr/bin/docker run --rm --name APP_NAME \
+  --env-file /etc/APP_NAME/env \
+  --publish APP_PORT:8000 \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges \
+  CONTAINER_IMAGE
+ExecStop=/usr/bin/docker stop APP_NAME
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+sed -i "s|APP_NAME|${app_name}|g; s|APP_PORT|${application_port}|g; s|CONTAINER_IMAGE|${container_image}|g" \
+  /etc/systemd/system/${app_name}.service
+
+systemctl daemon-reload
+systemctl enable --now ${app_name}.service
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/config.json <<'CWEOF'
+{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {"file_path": "/var/log/bootstrap.log", "log_group_name": "LOG_GROUP", "log_stream_name": "{instance_id}/bootstrap"},
+          {"file_path": "/var/log/messages", "log_stream_name": "{instance_id}/messages", "log_group_name": "LOG_GROUP"}
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "append_dimensions": {"AutoScalingGroupName": "$${aws:AutoScalingGroupName}", "InstanceId": "$${aws:InstanceId}"},
+    "metrics_collected": {
+      "mem": {"measurement": ["mem_used_percent"]},
+      "disk": {"measurement": ["used_percent"], "resources": ["/"]}
+    }
+  }
+}
+CWEOF
+sed -i "s|LOG_GROUP|${log_group}|g" /opt/aws/amazon-cloudwatch-agent/etc/config.json
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/config.json
+
+# Block until the app answers, so the ASG lifecycle hook does not mark the
+# instance healthy before it can actually serve.
+for attempt in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${application_port}${health_check_path}" >/dev/null 2>&1; then
+    echo "application healthy after $${attempt}s"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "application failed to become healthy" >&2
+exit 1

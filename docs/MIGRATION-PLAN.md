@@ -106,6 +106,10 @@ migration team owns and can afford to break.
 **Exit criteria:** a commit reaches staging automatically and production behind
 approval; a rollback has been performed on purpose and timed.
 
+The three landing targets - EKS, ECS Fargate and the EC2 rehost ASG - are all
+provisioned from the same VPC, database and least-privilege policy, so a
+workload reassessed mid-programme moves between them by changing a variable.
+
 ---
 
 ## Phase 3 - Wave execution (weeks 10-52)
@@ -136,7 +140,11 @@ cannot jump from `discovered` to `validated`, and `retire`/`retain` workloads ar
 barred from the cutover path entirely - a class of reporting error that would
 otherwise be found at a steering meeting rather than at the API.
 
-**Data migration.** DMS full load plus CDC keeps the target in sync while the
+**Data migration.** [MIGRATION-DEMO.md](MIGRATION-DEMO.md) runs this end to end
+against a real on-premises Kubernetes cluster, including the verification gate
+and both of its failure modes.
+
+DMS full load plus CDC keeps the target in sync while the
 source stays authoritative. Cutover is then a short window to drain, verify row
 counts and checksums, and repoint. Reverse replication is configured *before*
 cutover so rollback does not mean data loss - if it is not configured

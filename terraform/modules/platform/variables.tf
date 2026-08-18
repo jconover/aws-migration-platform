@@ -176,3 +176,27 @@ variable "ecs_desired_count" {
   type        = number
   default     = 2
 }
+
+variable "enable_ec2_rehost" {
+  description = "Provision the EC2 rehost target for lift-and-shift workloads."
+  type        = bool
+  default     = false
+}
+
+variable "ec2_instance_type" {
+  description = "Instance type for the rehost target."
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "ec2_desired_capacity" {
+  description = "Baseline instance count."
+  type        = number
+  default     = 2
+}
+
+variable "ec2_container_image" {
+  description = "Image the rehosted instances run."
+  type        = string
+  default     = "public.ecr.aws/docker/library/nginx:alpine"
+}

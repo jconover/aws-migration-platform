@@ -1,0 +1,101 @@
+# The on-premises database. Longhorn-backed persistent storage on bare metal,
+# which is what makes this a genuine migration source rather than a fixture:
+# the data survives pod restarts and has to be moved deliberately.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: legacy-postgres
+  namespace: legacy-onprem
+type: Opaque
+stringData:
+  POSTGRES_USER: tracker_admin
+  POSTGRES_PASSWORD: onprem-legacy-password
+  POSTGRES_DB: migration_tracker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-postgres
+  namespace: legacy-onprem
+spec:
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    app.kubernetes.io/name: legacy-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: legacy-postgres
+  namespace: legacy-onprem
+spec:
+  serviceName: legacy-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: legacy-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: legacy-postgres
+    spec:
+      # The cluster enforces the restricted Pod Security Standard. The official
+      # postgres image runs as uid 999, so it satisfies restricted as long as
+      # the pod says so explicitly and fsGroup makes the Longhorn volume
+      # writable by that user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: legacy-postgres
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # Sized to be a good neighbour on a cluster that is already running
+          # real workloads.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 2Gi

@@ -1,0 +1,11 @@
+# The simulated datacentre. Everything in here represents "before": the estate
+# as it exists on-premises, running on the Talos cluster, prior to any move
+# into AWS. Nothing in this namespace is managed by the AWS pipeline.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: legacy-onprem
+  labels:
+    app.kubernetes.io/part-of: migration-programme
+    migration.example.com/role: source
+    migration.example.com/site: datacentre

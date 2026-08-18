@@ -154,10 +154,20 @@ compromised pod cannot reach node credentials.
 
 ---
 
-## EKS or ECS Fargate
+## Where a workload lands: EKS, ECS Fargate, or EC2
 
-Both are implemented. `enable_ecs = true` provisions the Fargate path alongside
-EKS, sharing the same image, database, secret, and least-privilege policy.
+All three are implemented as sibling modules against one VPC, one database and
+one least-privilege policy, so moving a workload between them is a variable
+change rather than a rebuild:
+
+| Flag | Module | Lands as |
+| --- | --- | --- |
+| (default) | `modules/eks` | Kubernetes Deployment |
+| `enable_ecs` | `modules/ecs` | Fargate service |
+| `enable_ec2_rehost` | `modules/ec2-rehost` | ASG behind an internal ALB |
+
+That matters because the target chosen during discovery is often not the right
+one after the workload has run in AWS for a month.
 
 | | EKS | ECS Fargate |
 | --- | --- | --- |
@@ -177,14 +187,39 @@ EKS, sharing the same image, database, secret, and least-privilege policy.
   clouds or back on-premises is a stated requirement, or when the migrated
   applications need primitives ECS does not have.
 
-For this programme: **EKS for the platform** - the estate is large enough that
-node bin-packing and Spot capacity pay for the operational cost, and several
-rehosted applications need sidecars. **Fargate for the long tail** - low-traffic
-services where a scheduled task or a request every few minutes should not hold a
-node open.
+### EC2, for the workloads that are not containers yet
 
-Because both are Terraform modules taking the same inputs, moving a workload
-between them is a variable change, not a rewrite.
+`modules/ec2-rehost` is the lift-and-shift target. Not every migrated system
+becomes a container platform tenant, and forcing that during a migration is how
+a twelve-month programme becomes a twenty-month one. It provides:
+
+- **Launch template + ASG** across private subnets, with `instance_refresh`
+  and `auto_rollback` - the EC2 equivalent of a rolling update, which makes the
+  ASG a deployment target rather than just a capacity pool
+- **ELB health checks, not EC2** - an instance that boots but whose application
+  never starts is not healthy, and only the load balancer knows that
+- **No SSH, no key pairs, no inbound port 22.** Operator access is SSM Session
+  Manager, audited in CloudTrail. This also disposes of the "who still has the
+  old datacentre SSH key" problem
+- **IMDSv2 required** - the v1 endpoint is the classic SSRF-to-credential-theft
+  path, and rehosted code is exactly what nobody has audited for SSRF recently
+- **Credentials fetched from Secrets Manager at boot** by the instance role.
+  Nothing sensitive is baked into the AMI or passed through user data, which is
+  readable by anything that can reach the metadata service
+- **Encrypted EBS**, CloudWatch agent for logs and memory metrics, and a
+  bootstrap that blocks until the application answers its health check
+
+The application still ships as a container, supervised by systemd. A workload
+does not have to become Kubernetes to leave the datacentre.
+
+### How to choose, for this programme
+
+**EKS for the platform** - the estate is large enough that node bin-packing and
+Spot capacity pay for the operational cost, and several rehosted applications
+need sidecars. **Fargate for the long tail** - low-traffic services where a
+request every few minutes should not hold a node open. **EC2 for anything that
+assumes a host** - local disk, an agent, a licence tied to a MAC address, or
+simply an owner with no appetite to re-architect on a migration deadline.
 
 ---
 
@@ -225,3 +260,8 @@ Honest about what is not here:
 - **Prod reuses the staging account's GitHub OIDC provider**
   (`create_github_oidc_provider = false`). Correct for a shared account; if the
   environments are split across accounts, set it to `true` in prod.
+- **The migration demo is a full load, not CDC.** It moves data and verifies it,
+  but implies downtime for the duration. Continuous replication and reverse
+  replication are described in [RUNBOOK.md](RUNBOOK.md), not implemented.
+- **The EC2 ALB listener is HTTP on 443** pending an ACM certificate, the same
+  gap as the EKS Ingress.

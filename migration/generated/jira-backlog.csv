@@ -1,0 +1,192 @@
+Issue Type,Summary,Description,Epic Link,Labels,Story Points
+Epic,Discovery and assessment,"Inventory the estate, agree a strategy and owner per workload, and group workloads into waves by dependency cluster. Exit criteria: every workload has an owner, a strategy, a wave and a recorded dependency set.",,aws-migration,
+Epic,Landing zone,"Account structure, three-tier VPC, hybrid connectivity and guardrails. Exit criteria: terraform apply reproduces the landing zone from empty and hybrid connectivity is tested at real throughput.",,aws-migration,
+Epic,Platform and pipeline,"EKS, ECS Fargate and the EC2 rehost target, plus the CI/CD pipeline that deploys to them. Exit criteria: a commit reaches staging automatically and a rollback has been performed deliberately and timed.",,aws-migration,
+Epic,Wave execution,"Move workloads wave by wave: build, replicate, test, cut over, validate. Exit criteria: every workload in the wave is validated and its source is decommissioned or formally retained.",,aws-migration,
+Epic,Post-migration,"Hypercare, right-sizing against real demand, cost controls and operational handover. Exit criteria: workloads are owned by the run team with runbooks, dashboards and alarms in place.",,aws-migration,
+Story,Run Application Discovery Service across the estate,Collect utilisation and dependency data. Right-size from real metrics rather than replicating existing over-provisioning.,Discovery and assessment,aws-migration discovery,5
+Story,Identify retirement candidates and confirm with owners,"Typically 10-20% of an estate has no real consumers. Confirm with owners, not logs alone - a quiet service is not necessarily an unused one.",Discovery and assessment,aws-migration discovery,3
+Story,"Assign a strategy, owner and wave to every workload","Record in the tracker, not a spreadsheet. Waves are grouped by dependency cluster, never by team convenience.",Discovery and assessment,aws-migration discovery,5
+Story,Map network dependencies per wave,"Undiscovered dependencies are the most common cause of cutover overrun. Use flow data, and keep wave 1 low-criticality.",Discovery and assessment,aws-migration discovery,5
+Story,Agree the IPAM plan with the network team,"Allocate non-overlapping CIDRs for every environment before any VPC is
+built. Overlap found after Direct Connect is live costs weeks.",Landing zone,aws-migration landing-zone,3
+Story,Order Direct Connect and stand up backup VPN,DX lead time is 6-12 weeks and sits on the critical path. VPN carries the early waves.,Landing zone,aws-migration landing-zone,5
+Story,Build the three-tier VPC with Terraform,"Public, private and isolated data subnets across three AZs, with flow
+logs and VPC endpoints.",Landing zone,aws-migration landing-zone,5
+Story,Provision EKS with IRSA and access entries,"Private API endpoint, envelope encryption, managed addons, no cluster-admin by default.",Platform and pipeline,aws-migration platform,8
+Story,Provision the EC2 rehost target,"Launch template, ASG behind an internal ALB, SSM Session Manager instead
+of SSH, encrypted EBS.",Platform and pipeline,aws-migration platform,5
+Story,Provision RDS Postgres Multi-AZ,"Isolated data subnets, credentials generated into Secrets Manager, forced TLS.",Platform and pipeline,aws-migration platform,5
+Story,Establish GitHub OIDC deployment roles,No static AWS keys. Trust policies pin the exact subject claim per environment.,Platform and pipeline,aws-migration platform,3
+Story,Build the CI pipeline with a coverage gate,"Parallel lint, type, unit and integration jobs with an 80% floor and a regression gate.",Platform and pipeline,aws-migration platform,5
+Story,Prove rollback by rehearsing it,"Deliberately fail a rollout and time the automatic rollback. An untested
+rollback is a hypothesis.",Platform and pipeline,aws-migration platform,3
+Story,Run two weeks of hypercare per wave,Migration engineers stay on the rota. Do not hand straight to a run team that has never seen the workload.,Post-migration,aws-migration post-migration,3
+Story,Right-size workloads after two weeks of data,"Deliberately deferred so cutover changes one variable, not two. Use CloudWatch and Compute Optimizer against real demand.",Post-migration,aws-migration post-migration,3
+Story,Purchase Savings Plans once usage stabilises,Committing during migration locks in the pre-optimisation shape.,Post-migration,aws-migration post-migration,2
+Story,"Hand over runbooks, dashboards and alarms","Operational transfer per workload, with alarms landing on the shared SNS topic used by the pipeline.",Post-migration,aws-migration post-migration,3
+Story,Decommission source systems after the retention window,"Sources are retained read-only for the agreed period, then removed.",Post-migration,aws-migration post-migration,2
+Story,"Migrate billing-api (replatform, wave 1)","Strategy: replatform. Owner: payments. Wave: 1.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-1 replatform owner-payments,5
+Task,Cutover rehearsal for billing-api,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-1 replatform owner-payments cutover,2
+Story,"Migrate billing-worker (replatform, wave 1)","Strategy: replatform. Owner: payments. Wave: 1.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-1 replatform owner-payments,5
+Task,Cutover rehearsal for billing-worker,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-1 replatform owner-payments cutover,2
+Story,"Migrate invoice-renderer (rehost, wave 1)","Strategy: rehost. Owner: payments. Wave: 1.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-1 rehost owner-payments,3
+Task,Cutover rehearsal for invoice-renderer,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-1 rehost owner-payments cutover,2
+Story,Retire legacy-fax-gateway,"Confirm with facilities that legacy-fax-gateway has no remaining consumers, capture any data required for retention, then decommission. Retirement is the cheapest possible migration outcome, so confirm with owners rather than logs alone.",Wave execution,aws-migration wave-1 retire owner-facilities,2
+Story,Retire print-spooler,"Confirm with facilities that print-spooler has no remaining consumers, capture any data required for retention, then decommission. Retirement is the cheapest possible migration outcome, so confirm with owners rather than logs alone.",Wave execution,aws-migration wave-1 retire owner-facilities,2
+Story,"Migrate orders-api (replatform, wave 2)","Strategy: replatform. Owner: commerce. Wave: 2.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-2 replatform owner-commerce,5
+Task,Cutover rehearsal for orders-api,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-2 replatform owner-commerce cutover,2
+Story,"Migrate orders-worker (replatform, wave 2)","Strategy: replatform. Owner: commerce. Wave: 2.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-2 replatform owner-commerce,5
+Task,Cutover rehearsal for orders-worker,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-2 replatform owner-commerce cutover,2
+Story,"Migrate inventory-sync (rehost, wave 2)","Strategy: rehost. Owner: commerce. Wave: 2.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-2 rehost owner-commerce,3
+Task,Cutover rehearsal for inventory-sync,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-2 rehost owner-commerce cutover,2
+Story,"Migrate pricing-engine (refactor, wave 2)","Strategy: refactor. Owner: commerce. Wave: 2.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-2 refactor owner-commerce,13
+Task,Cutover rehearsal for pricing-engine,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-2 refactor owner-commerce cutover,2
+Story,"Migrate warehouse-scanner (rehost, wave 2)","Strategy: rehost. Owner: logistics. Wave: 2.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-2 rehost owner-logistics,3
+Task,Cutover rehearsal for warehouse-scanner,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-2 rehost owner-logistics cutover,2
+Story,"Migrate crm-connector (repurchase, wave 3)","Strategy: repurchase. Owner: sales. Wave: 3.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-3 repurchase owner-sales,8
+Task,Cutover rehearsal for crm-connector,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-3 repurchase owner-sales cutover,2
+Story,"Migrate reporting-etl (replatform, wave 3)","Strategy: replatform. Owner: data. Wave: 3.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-3 replatform owner-data,5
+Task,Cutover rehearsal for reporting-etl,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-3 replatform owner-data cutover,2
+Story,"Migrate data-warehouse (relocate, wave 3)","Strategy: relocate. Owner: data. Wave: 3.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-3 relocate owner-data,8
+Task,Cutover rehearsal for data-warehouse,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-3 relocate owner-data cutover,2
+Story,"Migrate ml-feature-store (refactor, wave 3)","Strategy: refactor. Owner: data. Wave: 3.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-3 refactor owner-data,13
+Task,Cutover rehearsal for ml-feature-store,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-3 refactor owner-data cutover,2
+Story,"Migrate hr-portal (repurchase, wave 4)","Strategy: repurchase. Owner: people. Wave: 4.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-4 repurchase owner-people,8
+Task,Cutover rehearsal for hr-portal,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-4 repurchase owner-people cutover,2
+Story,Document why payroll-batch is retained this cycle,"Record the regulatory or dependency blocker keeping payroll-batch on-premises, the review date, and the owner (people) accountable for revisiting it.",Wave execution,aws-migration wave-4 retain owner-people,1
+Story,Document why mainframe-bridge is retained this cycle,"Record the regulatory or dependency blocker keeping mainframe-bridge on-premises, the review date, and the owner (core-systems) accountable for revisiting it.",Wave execution,aws-migration wave-4 retain owner-core-systems,1
+Story,"Migrate auth-service (refactor, wave 4)","Strategy: refactor. Owner: platform. Wave: 4.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-4 refactor owner-platform,13
+Task,Cutover rehearsal for auth-service,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-4 refactor owner-platform cutover,2
+Story,"Migrate audit-log-archive (rehost, wave 5)","Strategy: rehost. Owner: compliance. Wave: 5.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-5 rehost owner-compliance,3
+Task,Cutover rehearsal for audit-log-archive,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-5 rehost owner-compliance cutover,2
+Story,"Migrate dr-replica (relocate, wave 5)","Strategy: relocate. Owner: platform. Wave: 5.
+
+Acceptance criteria:
+- Target infrastructure applied via Terraform, no console changes
+- Data replicated with CDC and reverse replication configured
+- Owner has signed off functionality and performance against replicated data
+- Cutover runbook written with a rollback decision deadline
+- Verification gate passes on row counts and checksums
+- Workload reaches 'validated' in the tracker",Wave execution,aws-migration wave-5 relocate owner-platform,8
+Task,Cutover rehearsal for dr-replica,"Dry-run the cutover end to end in staging, including the verification gate and a full rollback, and record the measured duration of each step.",Wave execution,aws-migration wave-5 relocate owner-platform cutover,2
