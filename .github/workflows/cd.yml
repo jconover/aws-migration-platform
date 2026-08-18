@@ -240,6 +240,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # Job-level so the value is visible to each step's `if`, which is not
+    # guaranteed for env declared on the step itself.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: Determine outcome
         id: outcome
@@ -255,7 +259,10 @@ jobs:
             echo "emoji=:white_check_mark:" >> "$GITHUB_OUTPUT"
           fi
 
+      # Skipped when no webhook is configured. A missing notification channel
+      # should not turn a passing pipeline red with a second, misleading failure.
       - name: Post to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v4
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}

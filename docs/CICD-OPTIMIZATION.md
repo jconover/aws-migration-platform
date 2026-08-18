@@ -12,21 +12,19 @@ the change is worth.
 
 ## A note on the numbers
 
-Two kinds of number appear below, and they are labelled throughout:
+Every figure in this document is measured, on this repository:
 
-- **Measured** - timed on this repository. Reproduce with the commands in
-  [Reproducing the measurements](#reproducing-the-measurements). These were taken
-  on an Apple M-series laptop, which is faster than a GitHub-hosted runner.
-- **Projected** - runner wall-clock estimates. GitHub's standard hosted runners
-  are 2-core with slower disk and network, so compute-bound stages are scaled up,
-  and fixed per-job overheads (VM allocation, checkout, tool setup, service
-  container boot) are added explicitly rather than hidden in a multiplier.
+- **Local** timings were taken on an Apple M-series laptop. Reproduce them with
+  the commands in [Reproducing the measurements](#reproducing-the-measurements).
+- **Runner** timings come from real GitHub Actions runs and the jobs API.
 
-The projections are stated so they can be checked, not asserted. The
-*structural* claims - what runs in parallel, what is cached, what is skipped -
-are exact and independent of the timings.
-
----
+This document previously carried *projected* runner timings and a headline claim
+of a 70% wall-clock reduction. Both pipelines were then actually run. The
+projections were wrong by up to 17×, and the measured result reversed the
+conclusion. The projections have been replaced with measurements throughout, and
+[Before and after, measured](#before-and-after-measured) records what the
+extrapolation got wrong and why. The structural claims - what runs in parallel,
+what is cached, what is skipped - were correct and are unchanged.
 
 ## The four bottlenecks
 
@@ -105,98 +103,125 @@ the release build is a re-export rather than a rebuild.
 
 ---
 
-## Before and after
+## Before and after, measured
 
-### Baseline: one job, everything in sequence
+Both pipelines were run on GitHub-hosted runners against the same commit.
+**These numbers replace the projections this document previously carried. The
+projections were wrong, and the measured result did not support the original
+conclusion.**
 
-```
-job: build-test-deploy  [postgres service held open for the entire job]
-  checkout → setup-python → install uv → uv sync (cold)
-    → ruff → ruff format → mypy
-    → unit tests → integration tests → coverage gate
-    → docker build (--no-cache)
-    → aws auth → deploy
-```
-
-| Stage | Measured (local) | Projected (runner) |
+| Pipeline | Wall-clock | Outcome |
 | --- | --- | --- |
-| Job start + Postgres boot | - | 15 s |
-| Checkout | - | 5 s |
-| setup-python | - | 8 s |
-| Install uv (network script) | - | 8 s |
-| `uv sync` (cold, no cache) | 1.07 s | 35 s |
-| `ruff check` | 0.41 s | 4 s |
-| `ruff format --check` | 0.10 s | 2 s |
-| `mypy app` (cold cache) | 0.09 s (warm) | 20 s |
-| Unit tests | 1.80 s | 12 s |
-| Integration tests | 2.65 s | 18 s |
-| Coverage gate | - | 4 s |
-| `docker build --no-cache` | 8.7 s | 150 s |
-| Auth + deploy | - | 30 s |
-| **Total (sum - it is all serial)** | | **~5 min 51 s** |
+| `ci-baseline.yml` (serial, uncached) | **1 min 03 s** | passed everything, failed only at the AWS step, which has no credentials configured |
+| `ci.yml` (parallel, cached) | **1 min 57 s** | success |
 
-### Rewrite: fan out, cache, skip
+The rewrite is **54 s slower**, not 70% faster.
 
-```
-changes ──┬─ lint ────────────────────┐
-          ├─ typecheck ───────────────┤
-          ├─ unit ──────────┐         │
-          ├─ integration ───┴─ coverage-gate ─┤
-          ├─ docker-build ────────────┤       ├─→ ci-complete
-          ├─ security-scan ───────────┤       │
-          ├─ terraform-validate (×13) ┤       │
-          └─ kubernetes-validate ─────┴───────┘
-```
+### Why the projections were wrong
 
-| Branch | Composition | Projected |
-| --- | --- | --- |
-| `changes` | checkout + path filter | 20 s |
-| `lint` | setup (cached) + ruff | 20 s |
-| `typecheck` | setup (cached) + mypy | 32 s |
-| `unit` | setup (cached) + pytest | 25 s |
-| `integration` | setup + Postgres boot + pytest | 35 s |
-| `coverage-gate` | after `unit` + `integration`, combine + enforce | +25 s |
-| `docker-build` | buildx + cached build + smoke test | 50 s |
-| `security-scan` | cached build + Trivy | 75 s |
-| `terraform-validate` | 13-way matrix, all parallel | 35 s |
-| `kubernetes-validate` | 2-way matrix | 20 s |
-| `ci-complete` | result aggregation | 10 s |
+The local measurements were accurate. The extrapolation to hosted runners was
+not. I assumed a hosted runner would be slower than a laptop across the board;
+for network and disk it is substantially faster.
 
-Critical path is `changes` → `security-scan` → `ci-complete`:
-
-**20 s + 75 s + 10 s ≈ 1 min 45 s**
-
-### Summary
-
-| | Baseline | Rewrite | Change |
+| Stage | Projected | Actual on runner | Error |
 | --- | --- | --- | --- |
-| Full run, code change | ~5 min 51 s | ~1 min 45 s | **-70%** |
-| Docs-only change | ~5 min 51 s | ~30 s | **-91%** |
-| Terraform-only change | ~5 min 51 s | ~55 s | **-84%** |
-| Feedback on a lint error | ~1 min 5 s | ~20 s | **-69%** |
+| `uv sync`, cold cache | 35 s | **2 s** | 17× too high |
+| `docker build --no-cache` | 150 s | **16 s** | 9× too high |
+| Postgres service boot | 15 s | **14 s** | accurate |
+| `mypy`, cold cache | 20 s | **8 s** | 2.5× too high |
 
-The docs-only and Terraform-only rows are the path filter doing its job: a README
-edit skips every Python job, the container build, the scan, and both manifest
-checks. The last row matters more than the headline: the baseline makes a
-developer wait through dependency installation and a Postgres boot to be told
-about a missing import.
+The two stages I identified as the biggest bottlenecks - dependency install and
+uncached image build - are the two that barely cost anything here. `uv` resolves
+a 144 MB dependency set in two seconds on a runner, and a 337 MB image built from
+a slim base with a warm layer cache is a 16-second job. **The bottlenecks were
+real in structure and negligible in magnitude.**
 
-### What the rewrite costs
+### The comparison is not like-for-like
 
-Honest accounting, since parallelism is not free:
+The baseline and the rewrite do not do the same amount of work. The rewrite adds:
 
-- **More billable minutes, less wall-clock.** Eight jobs each pay ~15 s of VM
-  allocation and checkout. Total *machine* time goes up by roughly 1.5 min even
-  as *developer* time drops by 4 min. On GitHub's per-minute billing that is a
-  real trade, and it is the right one - engineer time is the scarcer resource.
-- **The container is built twice on a full run** (`docker-build` and
-  `security-scan`), because the scanner needs a loaded image and job isolation
-  prevents sharing one. The second build is a cache hit, so it costs seconds, and
-  it buys the two jobs running concurrently rather than in sequence.
-- **`cancel-in-progress` is scoped to pull requests only.** Cancelling runs on
-  `main` would leave gaps in the coverage baseline that PRs compare against.
+| Added by the rewrite | Cost |
+| --- | --- |
+| Trivy image scan, SARIF upload, CRITICAL gate | **99 s** |
+| Terraform `fmt` + `validate` across 13 stacks | 17 s (parallel) |
+| Kustomize overlay render + substitution contract test | 8 s |
+| Container smoke test and non-root verification | inside the 47 s build job |
 
----
+Restricting the rewrite to only what the baseline does, and computing its
+critical path from the measured job durations:
+
+```
+changes 6s
+  → max(lint 9s, typecheck 15s, unit 12s, integration 43s, docker 47s) = 47s
+  → coverage-gate waits on unit+integration: 43s + 15s = 58s
+  → ci-complete 4s
+like-for-like critical path ≈ 68s   vs   baseline 63s
+```
+
+**Like for like, the parallel pipeline is 5 s slower.** Per-job overhead - VM
+allocation, checkout, tool setup, roughly 10-15 s - is paid six times instead of
+once, and that exceeds everything serialisation saves when each stage takes
+seconds.
+
+### Measured job durations
+
+| Job | Duration |
+| --- | --- |
+| Security scan | **99 s** ← critical path |
+| Docker build (incl. smoke test) | 47 s |
+| Integration tests (incl. Postgres boot) | 43 s |
+| Terraform validate (slowest of 13, parallel) | 17 s |
+| Type check | 15 s |
+| Coverage gate | 15 s |
+| Unit tests | 12 s |
+| Lint | 9 s |
+| Kubernetes manifests (each) | 8 s |
+| Detect changes | 6 s |
+| CI complete | 4 s |
+
+Trivy dominates, and it is mostly vulnerability-database download: 125 s on the
+first run, 99 s once the action's cache warmed. Caching is on by default.
+
+### What the rewrite is actually worth
+
+Wall-clock was the wrong headline. What the measurements support:
+
+1. **Substantially more checking for 54 s.** Container vulnerability scanning,
+   IaC validation across 13 stacks, manifest rendering, a smoke test, and a
+   non-root assertion - none of which the baseline performs at all.
+2. **Path filtering is the one large, real win.** A docs-only change skips every
+   job and finishes in about 10 s, against 63 s for the baseline, which runs the
+   whole chain regardless. That is a genuine 6× on the most common pull request.
+3. **Targeted feedback.** A lint error surfaces from a 9 s job instead of after
+   dependency install, type check, and both test suites have run.
+4. **Failure isolation.** One green run reports every failing dimension at once,
+   rather than stopping at the first.
+5. **The coverage gate**, which requires the split-suite structure to work at all.
+
+### When parallelism starts paying
+
+The structure wins as stage durations grow, because per-job overhead is fixed:
+
+| Test suite duration | Serial | Parallel | Winner |
+| --- | --- | --- | --- |
+| ~10 s (today) | 63 s | 68 s | serial, marginally |
+| ~2 min | ~3 min | ~2 min 20 s | parallel |
+| ~10 min | ~11 min | ~10 min 20 s | parallel, decisively |
+
+At this repository's current size the parallel structure is not earning its
+overhead on wall-clock. It is the right shape for a migration programme whose
+test surface grows every wave, and the added scope is worth 54 s today. But the
+honest statement is that **it was adopted for scope and feedback quality, not for
+speed, and the speed claim it was originally justified with did not survive
+measurement.**
+
+### If sub-60 s pull-request feedback is wanted
+
+The single lever is Trivy, which is 85% of the critical path. Move the image
+scan to `push`-on-`main` plus a nightly schedule and leave pull requests with the
+faster checks; the critical path drops to roughly 68 s. That trades scan latency
+on feature branches for feedback speed, and is a team decision rather than an
+obvious win - it is deliberately not applied here.
 
 ## The coverage gate
 
@@ -278,6 +303,14 @@ uv run coverage combine .coverage.unit .coverage.integration
 uv run coverage report --fail-under=80
 ```
 
-To time the pipelines against each other on real runners, dispatch
-`CI (baseline - reference only)` and compare its duration to the `CI` run on the
-same commit.
+To reproduce the pipeline comparison:
+
+```bash
+gh workflow run ci-baseline.yml --ref main     # the serial baseline
+gh run list --workflow ci-baseline.yml --limit 1
+gh run list --workflow ci.yml --limit 1        # the parallel rewrite
+```
+
+Both were measured this way. The baseline fails at its final AWS step, which has
+no credentials configured; every stage before it completes, so its wall-clock is
+a valid measurement of the full lint, test, coverage, and build path.

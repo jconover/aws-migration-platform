@@ -96,6 +96,8 @@ Everything below was executed against this repository, not assumed.
 | `actionlint` (with shellcheck) | 0 findings across 5 workflows |
 | Kustomize overlays | staging and prod render, 11 resources each |
 | Container | builds, runs healthy, serves traffic as UID 10001 |
+| CI on GitHub Actions | **all 21 jobs green** in 1 min 57 s |
+| CD on GitHub Actions | job graph builds; fails only at AWS auth, which is unconfigured |
 
 ## Pipeline
 
@@ -110,9 +112,15 @@ changes ──┬─ lint ──────────────────
           └─ kubernetes-validate ─────┴───────┘
 ```
 
-`ci-complete` is the single status check to require in branch protection. The
-rewrite takes a full run from ~5 min 51 s to ~1 min 45 s, and a docs-only change
-to ~30 s. Method and measurements: [docs/CICD-OPTIMIZATION.md](docs/CICD-OPTIMIZATION.md).
+`ci-complete` is the single status check to require in branch protection.
+
+Measured on real runners: the serial baseline takes **1 min 03 s**, the parallel
+rewrite **1 min 57 s**. The rewrite is slower on wall-clock and does considerably
+more - container scanning, IaC validation across 13 stacks, manifest rendering,
+and a smoke test. Its real wins are a docs-only change finishing in ~10 s via path
+filters, feedback isolation, and the coverage gate. An earlier draft of this
+README claimed a 70% speed-up from projected timings; measurement disproved it.
+Full analysis: [docs/CICD-OPTIMIZATION.md](docs/CICD-OPTIMIZATION.md).
 
 CD builds once, pushes to ECR, and deploys **by digest** to staging, smoke tests
 from inside the cluster, then production behind an environment approval. Failed

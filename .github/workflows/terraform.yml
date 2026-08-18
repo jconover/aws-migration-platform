@@ -190,8 +190,15 @@ jobs:
     if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Job-level so the value is visible to each step's `if`, which is not
+    # guaranteed for env declared on the step itself.
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
+      # Skipped when no webhook is configured. A missing notification channel
+      # should not turn a passing pipeline red with a second, misleading failure.
       - name: Post to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v4
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
