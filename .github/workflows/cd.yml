@@ -1,0 +1,293 @@
+# ===========================================================================
+# CD - publish the image, then roll it out to EKS and/or ECS.
+#
+# Authentication is entirely OIDC. There are no AWS access keys in this
+# repository or in GitHub secrets; configure-aws-credentials exchanges the
+# job's OIDC token for credentials that expire when the job ends.
+#
+# The image is deployed by digest, never by tag. A tag can be repointed; a
+# digest cannot, so what staging validated is bit-for-bit what production runs.
+# ===========================================================================
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+      target:
+        description: Deployment target
+        type: choice
+        options: [eks, ecs, both]
+        default: eks
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Build once, push once. Every environment below deploys this exact digest.
+  # -------------------------------------------------------------------------
+  publish:
+    name: Build and publish image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.image.outputs.reference }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Assume the deployment role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-publish-${{ github.run_id }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          # Reuses the layer cache CI warmed on this commit, so this is
+          # typically a near-instant re-export rather than a rebuild.
+          cache-from: |
+            type=gha,scope=CI
+            type=gha,scope=CD
+          cache-to: type=gha,mode=max,scope=CD
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish the immutable reference
+        id: image
+        run: |
+          reference="${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+          echo "reference=${reference}" >> "$GITHUB_OUTPUT"
+          echo "Deploying by digest: ${reference}" >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # Staging rollout, then production behind a protected environment.
+  # -------------------------------------------------------------------------
+  deploy-staging-eks:
+    name: Deploy to EKS (staging)
+    needs: publish
+    if: github.event_name == 'push' || inputs.target != 'ecs'
+    uses: ./.github/workflows/reusable-deploy-eks.yml
+    with:
+      environment: staging
+      overlay: staging
+      image: ${{ needs.publish.outputs.image }}
+    secrets: inherit
+
+  smoke-staging:
+    name: Smoke test staging
+    needs: deploy-staging-eks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-smoke-${{ github.run_id }}
+
+      - uses: azure/setup-kubectl@v5
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+
+      # Runs inside the cluster because the service is on private subnets and
+      # the ALB is internal - there is no route to it from a hosted runner.
+      - name: Probe the service from inside the cluster
+        run: |
+          set -euo pipefail
+          kubectl run smoke-${{ github.run_id }} \
+            --namespace migration-tracker \
+            --image=curlimages/curl:8.11.1 \
+            --restart=Never --rm --attach --quiet --command -- \
+            curl -fsS --retry 5 --retry-delay 3 --max-time 10 \
+            http://migration-tracker.migration-tracker.svc.cluster.local/readyz
+
+  deploy-production-eks:
+    name: Deploy to EKS (production)
+    needs: [publish, smoke-staging]
+    if: github.event_name == 'push' || inputs.environment == 'production'
+    uses: ./.github/workflows/reusable-deploy-eks.yml
+    with:
+      environment: production
+      overlay: prod
+      image: ${{ needs.publish.outputs.image }}
+    secrets: inherit
+
+  # -------------------------------------------------------------------------
+  # ECS path. Runs when the workload is hosted on Fargate instead of, or as
+  # well as, EKS.
+  # -------------------------------------------------------------------------
+  deploy-ecs:
+    name: Deploy to ECS Fargate
+    needs: publish
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'ecs' || inputs.target == 'both')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-ecs-${{ github.run_id }}
+
+      - name: Download the live task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ vars.ECS_TASK_FAMILY }}" \
+            --query taskDefinition > taskdef.json
+
+      - name: Render the new image into the task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: taskdef.json
+          container-name: api
+          image: ${{ needs.publish.outputs.image }}
+
+      # wait-for-service-stability blocks until ECS reports steady state. If the
+      # circuit breaker rolls the deployment back, this step fails, so a broken
+      # release cannot be reported as a success.
+      - name: Deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ vars.ECS_SERVICE_NAME }}
+          cluster: ${{ vars.ECS_CLUSTER_NAME }}
+          wait-for-service-stability: true
+          wait-for-minutes: 15
+
+  # -------------------------------------------------------------------------
+  # Notifications. Deployment outcomes go to Slack and to the SNS topic the
+  # infrastructure alarms already use, so on-call watches one place.
+  # -------------------------------------------------------------------------
+  notify:
+    name: Notify deployment outcome
+    needs: [publish, deploy-staging-eks, smoke-staging, deploy-production-eks]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Determine outcome
+        id: outcome
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "emoji=:x:" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "status=cancelled" >> "$GITHUB_OUTPUT"
+            echo "emoji=:warning:" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=succeeded" >> "$GITHUB_OUTPUT"
+            echo "emoji=:white_check_mark:" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Deployment ${{ steps.outcome.outputs.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.outcome.outputs.emoji }} *Deployment ${{ steps.outcome.outputs.status }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repository*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Digest*\n`${{ needs.publish.outputs.digest }}`" },
+                    { "type": "mrkdwn", "text": "*Triggered by*\n${{ github.actor }}" },
+                    { "type": "mrkdwn", "text": "*Run*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View>" }
+                  ]
+                }
+              ]
+            }
+
+      - name: Assume the deployment role
+        if: steps.outcome.outputs.status == 'failed' && vars.ALERTS_TOPIC_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-notify-${{ github.run_id }}
+
+      - name: Page on-call via SNS
+        if: steps.outcome.outputs.status == 'failed'
+        env:
+          TOPIC_ARN: ${{ vars.ALERTS_TOPIC_ARN }}
+        run: |
+          if [ -z "${TOPIC_ARN}" ]; then
+            echo "ALERTS_TOPIC_ARN not configured; skipping SNS notification"
+            exit 0
+          fi
+          aws sns publish --topic-arn "${TOPIC_ARN}" \
+            --subject "Deployment failed: ${{ github.repository }}" \
+            --message "Commit ${{ github.sha }} failed to deploy. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

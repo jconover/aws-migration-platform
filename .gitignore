@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+coverage-baseline.json
+htmlcov/
+junit-*.xml
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.txt
+plan-readable.txt
+terraform.tfvars
+!terraform.tfvars.example
+crash.log
+
+# Kubernetes
+deploy/k8s/rendered.yaml
+
+# Local
+.env
+.env.*
+.DS_Store

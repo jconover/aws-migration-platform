@@ -1,0 +1,93 @@
+# ===========================================================================
+# BASELINE PIPELINE - kept for comparison only. Do not enable alongside ci.yml.
+#
+# This is the shape most projects start with: one job, every step in sequence,
+# no caching, a full Docker rebuild each time. docs/CICD-OPTIMIZATION.md walks
+# through the four bottlenecks it contains and measures the rewrite against it.
+#
+# Enable manually with workflow_dispatch to reproduce the "before" timings.
+# ===========================================================================
+name: CI (baseline - reference only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-deploy:
+    name: Everything, in order
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    # BOTTLENECK 3: a service container is booted for the whole job, including
+    # the lint and build phases that never touch a database.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_tracker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # BOTTLENECK 1: no dependency cache. Every run resolves and downloads the
+      # full dependency tree from scratch.
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      # BOTTLENECK 2: strictly sequential. Lint failures surface only after the
+      # slower steps ahead of them have already burned wall-clock time, and a
+      # type error is not reported until lint has finished.
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy app
+
+      - name: Unit tests
+        run: uv run pytest tests/unit --cov=app --cov-report=xml
+
+      - name: Integration tests
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migration_tracker_test
+        run: uv run pytest tests/integration --cov=app --cov-append --cov-report=xml
+
+      - name: Coverage gate
+        run: uv run python scripts/coverage_gate.py --report coverage.xml --min 80
+
+      # BOTTLENECK 4: a plain docker build with no layer cache. Dependency
+      # layers are rebuilt on every commit even when only app code changed.
+      - name: Build image
+        run: docker build -t migration-tracker:${{ github.sha }} .
+
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Push and deploy
+        if: github.ref == 'refs/heads/main'
+        run: echo "push + kubectl rollout would run here"

@@ -1,0 +1,33 @@
+name: Setup Python environment
+description: >-
+  Install uv, provision the interpreter and restore the dependency cache.
+  Centralised so every job caches identically - a divergent cache key in one
+  job silently costs a full dependency resolution on every run.
+
+inputs:
+  python-version:
+    description: Python version to provision.
+    required: false
+    default: "3.12"
+  groups:
+    description: uv sync argument selecting dependency groups.
+    required: false
+    default: "--all-groups"
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv with dependency caching
+      uses: astral-sh/setup-uv@v10
+      with:
+        version: "0.9.9"
+        python-version: ${{ inputs.python-version }}
+        enable-cache: true
+        # The cache is keyed on the lockfile. Any dependency change produces a
+        # new key; anything else is a hit.
+        cache-dependency-glob: "uv.lock"
+        cache-suffix: py${{ inputs.python-version }}
+
+    - name: Sync dependencies
+      shell: bash
+      run: uv sync ${{ inputs.groups }} --locked

@@ -1,0 +1,211 @@
+# ===========================================================================
+# Infrastructure delivery.
+#
+# Plan on every pull request that touches terraform/, posted to the PR so the
+# blast radius is reviewable. Apply only from main, behind an environment
+# approval gate.
+#
+# The plan is saved and reused for the apply, so what a reviewer approved is
+# exactly what runs - no re-plan window where reality can shift underneath it.
+# ===========================================================================
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**', '.github/workflows/terraform.yml']
+  push:
+    branches: [main]
+    paths: ['terraform/**']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [staging, prod]
+        default: staging
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.15.8"
+
+jobs:
+  plan:
+    name: Plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ matrix.environment }}-plan
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, prod]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # A plan needs read access only. This role is separate from the apply
+      # role and holds ReadOnlyAccess, so a compromised pull request cannot
+      # change infrastructure.
+      - name: Assume the plan role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-plan-${{ github.run_id }}
+
+      - name: Init
+        working-directory: terraform/envs/${{ matrix.environment }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="kms_key_id=${{ vars.TF_STATE_KMS_KEY_ARN }}"
+
+      - name: Format check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Validate
+        working-directory: terraform/envs/${{ matrix.environment }}
+        run: terraform validate
+
+      - name: Plan
+        id: plan
+        working-directory: terraform/envs/${{ matrix.environment }}
+        run: |
+          set -o pipefail
+          terraform plan -input=false -lock-timeout=5m \
+            -var-file=terraform.tfvars \
+            -out=tfplan | tee plan.txt
+          terraform show -no-color tfplan > plan-readable.txt
+
+      - name: Summarise the plan
+        working-directory: terraform/envs/${{ matrix.environment }}
+        run: |
+          {
+            echo "### Terraform plan - ${{ matrix.environment }}"
+            echo ""
+            echo '```'
+            grep -E '^(Plan:|No changes)' plan.txt || echo "see full output"
+            echo '```'
+            echo ""
+            echo "<details><summary>Full plan</summary>"
+            echo ""
+            echo '```terraform'
+            head -c 60000 plan-readable.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Destructive changes are the ones worth a second pair of eyes. Surfacing
+      # the count as a warning makes them hard to scroll past.
+      - name: Flag destructive changes
+        working-directory: terraform/envs/${{ matrix.environment }}
+        run: |
+          destroy_count=$(grep -cE '^\s+# .* will be destroyed' plan-readable.txt || true)
+          if [ "${destroy_count:-0}" -gt 0 ]; then
+            echo "::warning::${destroy_count} resource(s) will be DESTROYED in ${{ matrix.environment }}"
+          fi
+
+      - name: Upload the plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: |
+            terraform/envs/${{ matrix.environment }}/tfplan
+            terraform/envs/${{ matrix.environment }}/plan-readable.txt
+          retention-days: 5
+
+  apply:
+    name: Apply (${{ inputs.environment || 'staging' }})
+    needs: plan
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ${{ inputs.environment || 'staging' }}-infra
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the apply role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-tf-apply-${{ github.run_id }}
+
+      - name: Download the approved plan
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ inputs.environment || 'staging' }}
+          path: terraform/envs/${{ inputs.environment || 'staging' }}
+
+      - name: Init
+        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="kms_key_id=${{ vars.TF_STATE_KMS_KEY_ARN }}"
+
+      - name: Apply the saved plan
+        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
+
+      - name: Publish outputs
+        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        run: |
+          {
+            echo "### Terraform outputs"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  notify-failure:
+    name: Notify on failure
+    needs: [plan, apply]
+    if: always() && contains(needs.*.result, 'failure') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Terraform run failed on main",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *Terraform failed on main*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+                  }
+                }
+              ]
+            }

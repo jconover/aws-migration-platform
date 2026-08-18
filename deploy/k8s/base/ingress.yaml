@@ -1,0 +1,26 @@
+# Fronted by the AWS Load Balancer Controller. target-type ip sends traffic
+# straight to pod ENIs, which removes the extra node hop and makes rolling
+# updates drain cleanly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: migration-tracker
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/load-balancer-attributes: routing.http.drop_invalid_header_fields.enabled=true
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: migration-tracker
+                port:
+                  name: http

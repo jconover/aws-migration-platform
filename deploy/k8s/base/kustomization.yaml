@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: migration-tracker
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - secretproviderclass.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+
+# 'labels' with includeSelectors omitted adds metadata labels without touching
+# selectors. Mutating selectors on a live Deployment is an immutable-field error.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: migration-tracker
+      app.kubernetes.io/managed-by: kustomize

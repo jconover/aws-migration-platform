@@ -1,0 +1,157 @@
+# ===========================================================================
+# Reusable EKS rollout.
+#
+# Called once per environment by cd.yml. Keeping it in one place means the
+# production rollout runs the identical steps staging just proved, rather than
+# a copy that has quietly drifted.
+# ===========================================================================
+name: Deploy to EKS
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment providing the vars, secrets and approval gate.
+        required: true
+        type: string
+      overlay:
+        description: Kustomize overlay directory under deploy/k8s/overlays.
+        required: true
+        type: string
+      image:
+        description: Fully qualified image reference, pinned by digest.
+        required: true
+        type: string
+      rollout_timeout:
+        description: How long to wait for the rollout to become healthy.
+        required: false
+        type: string
+        default: 5m
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Roll out to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assume the deployment role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-deploy-${{ inputs.environment }}-${{ github.run_id }}
+
+      - uses: azure/setup-kubectl@v5
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+
+      # Substituting real values here rather than committing them keeps the
+      # manifests environment-agnostic and free of account identifiers.
+      - name: Resolve overlay placeholders
+        working-directory: deploy/k8s
+        env:
+          IMAGE: ${{ inputs.image }}
+          APP_ROLE_ARN: ${{ vars.APP_ROLE_ARN }}
+          DB_SECRET_ARN: ${{ vars.DB_SECRET_ARN }}
+          DB_HOST: ${{ vars.DB_HOST }}
+        run: |
+          set -euo pipefail
+          for required in IMAGE APP_ROLE_ARN DB_SECRET_ARN DB_HOST; do
+            if [ -z "${!required}" ]; then
+              echo "::error::${required} is not configured for environment ${{ inputs.environment }}"
+              exit 1
+            fi
+          done
+
+          # Split registry/repo@sha256:... into its two halves. The overlay uses
+          # kustomize's 'digest' field, so the reference stays immutable.
+          image_repo="${IMAGE%@*}"
+          image_digest="${IMAGE##*@}"
+          if [ "${image_repo}" = "${IMAGE}" ]; then
+            echo "::error::image must be pinned by digest, got '${IMAGE}'"
+            exit 1
+          fi
+
+          sed -i "s|PLACEHOLDER_DB_SECRET_ARN|${DB_SECRET_ARN}|" base/secretproviderclass.yaml
+          sed -i "s|eks.amazonaws.com/role-arn: PLACEHOLDER|eks.amazonaws.com/role-arn: ${APP_ROLE_ARN}|" base/serviceaccount.yaml
+          sed -i "s|value: placeholder|value: ${DB_HOST}|" base/deployment.yaml
+
+          sed -i "s|PLACEHOLDER_IMAGE_REPO|${image_repo}|" overlays/${{ inputs.overlay }}/kustomization.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_DIGEST|${image_digest}|" overlays/${{ inputs.overlay }}/kustomization.yaml
+
+      - name: Render and inspect the manifests
+        working-directory: deploy/k8s
+        run: |
+          set -euo pipefail
+          kubectl kustomize overlays/${{ inputs.overlay }} > rendered.yaml
+          if grep -n 'PLACEHOLDER' rendered.yaml; then
+            echo "::error::unresolved placeholders remain in the rendered manifests"
+            exit 1
+          fi
+          echo '### Rendered manifest summary' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(kind|  name):' rendered.yaml | head -40 >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Server-side dry run
+        working-directory: deploy/k8s
+        run: kubectl apply --dry-run=server -f rendered.yaml
+
+      # The schema migration runs before the new image serves traffic. Keep
+      # migrations backward compatible so the old replicas survive until the
+      # rollout finishes.
+      - name: Apply database schema
+        run: |
+          set -euo pipefail
+          job="db-init-${GITHUB_RUN_ID}"
+          kubectl create job "${job}" \
+            --namespace migration-tracker \
+            --image "${{ inputs.image }}" \
+            -- python /build/scripts/init_db.py || true
+          kubectl wait --for=condition=complete "job/${job}" \
+            --namespace migration-tracker --timeout=5m || {
+              echo "::error::schema job did not complete"
+              kubectl logs "job/${job}" --namespace migration-tracker --tail=100 || true
+              exit 1
+            }
+          kubectl delete job "${job}" --namespace migration-tracker --ignore-not-found
+
+      - name: Apply manifests
+        working-directory: deploy/k8s
+        run: kubectl apply -f rendered.yaml
+
+      - name: Wait for the rollout
+        id: rollout
+        run: |
+          kubectl rollout status deployment/migration-tracker \
+            --namespace migration-tracker \
+            --timeout=${{ inputs.rollout_timeout }}
+
+      # An automatic undo beats a human reading logs at 03:00 during a cutover
+      # weekend. The previous ReplicaSet is still present, so this is immediate.
+      - name: Roll back on failure
+        if: failure() && steps.rollout.outcome == 'failure'
+        run: |
+          echo "::error::rollout failed; reverting to the previous revision"
+          kubectl rollout undo deployment/migration-tracker --namespace migration-tracker
+          kubectl rollout status deployment/migration-tracker \
+            --namespace migration-tracker --timeout=5m
+          kubectl get pods --namespace migration-tracker -o wide
+          exit 1
+
+      - name: Report deployed revision
+        run: |
+          {
+            echo "### Deployed to ${{ inputs.environment }}"
+            echo ""
+            echo "- Image: \`${{ inputs.image }}\`"
+            echo "- Replicas: $(kubectl get deployment migration-tracker -n migration-tracker -o jsonpath='{.status.readyReplicas}')/$(kubectl get deployment migration-tracker -n migration-tracker -o jsonpath='{.spec.replicas}')"
+          } >> "$GITHUB_STEP_SUMMARY"

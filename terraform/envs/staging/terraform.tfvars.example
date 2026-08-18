@@ -1,0 +1,4 @@
+region                  = "us-east-1"
+artifact_bucket_name    = "migration-tracker-staging-artifacts-1234567890"
+github_repository       = "example-org/migration-tracker"
+cluster_admin_role_arns = ["arn:aws:iam::111122223333:role/PlatformEngineers"]

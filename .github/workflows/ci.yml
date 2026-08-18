@@ -1,0 +1,559 @@
+# ===========================================================================
+# CI - build, test, lint, containerise, scan.
+#
+# Shape (see docs/CICD-OPTIMIZATION.md for the measured rationale):
+#
+#   changes ──┬─ lint ───────────────┐
+#             ├─ typecheck ──────────┤
+#             ├─ unit ───────────────┼─→ coverage-gate ─┐
+#             ├─ integration ────────┘                  ├─→ ci-complete
+#             ├─ docker-build (warms the layer cache) ──┤
+#             ├─ terraform-validate ────────────────────┤
+#             └─ security-scan ─────────────────────────┘
+#
+# Everything after `changes` runs concurrently. `ci-complete` is the single
+# required status check to protect the branch with.
+# ===========================================================================
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Superseded runs on the same ref are pointless; cancel them and free runners.
+# main is never cancelled, so the baseline recorded on main is always complete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  COVERAGE_MINIMUM: "80"
+  COVERAGE_TOLERANCE: "0.5"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Path filtering. Cheap job whose outputs let expensive jobs skip themselves
+  # when nothing they care about changed.
+  # -------------------------------------------------------------------------
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      docker: ${{ steps.filter.outputs.docker }}
+      terraform: ${{ steps.filter.outputs.terraform }}
+      k8s: ${{ steps.filter.outputs.k8s }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'app/**'
+              - 'tests/**'
+              - 'scripts/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            docker:
+              - 'app/**'
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            terraform:
+              - 'terraform/**'
+            k8s:
+              - 'deploy/**'
+
+  # -------------------------------------------------------------------------
+  # Static analysis. Two separate jobs so a type error and a lint error are
+  # both reported on the first run instead of one hiding the other.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+  typecheck:
+    name: Type check
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Mypy (strict)
+        run: uv run mypy app
+
+  # -------------------------------------------------------------------------
+  # Unit tests. No database, so no service container is started.
+  # -------------------------------------------------------------------------
+  unit:
+    name: Unit tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run unit tests
+        env:
+          COVERAGE_FILE: .coverage.unit
+        run: uv run pytest tests/unit -m "not integration" --cov=app --cov-report= --junitxml=junit-unit.xml
+
+      - name: Upload coverage fragment
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-unit
+          path: .coverage.unit
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-unit
+          path: junit-unit.xml
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Integration tests against a real Postgres service container.
+  # -------------------------------------------------------------------------
+  integration:
+    name: Integration tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_tracker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 5s
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run integration tests
+        env:
+          COVERAGE_FILE: .coverage.integration
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migration_tracker_test
+        run: uv run pytest tests/integration --cov=app --cov-report= --junitxml=junit-integration.xml
+
+      - name: Upload coverage fragment
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-integration
+          path: .coverage.integration
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-integration
+          path: junit-integration.xml
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # The merge gate. Combines both coverage fragments, enforces the 80% floor,
+  # and fails when coverage regresses against the baseline recorded on main.
+  # -------------------------------------------------------------------------
+  coverage-gate:
+    name: Coverage gate
+    needs: [changes, unit, integration]
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Required by 'gh run download' to fetch the baseline artifact from main.
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-python-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download coverage fragments
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: Combine coverage
+        run: |
+          uv run coverage combine .coverage.unit .coverage.integration
+          uv run coverage xml -o coverage.xml
+          uv run coverage report
+
+      # The baseline is whatever main last recorded. A missing baseline (first
+      # run, or an expired artifact) degrades to the absolute floor rather than
+      # failing the build on infrastructure rather than code.
+      - name: Fetch coverage baseline from main
+        id: baseline
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh run list --workflow ci.yml --branch main --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "no successful main run found; regression check will be skipped"
+            exit 0
+          fi
+          if gh run download "$run_id" --name coverage-baseline --dir baseline 2>/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            cat baseline/coverage-baseline.json
+          else
+            echo "baseline artifact not available on run $run_id"
+          fi
+
+      - name: Enforce coverage contract
+        run: |
+          uv run python scripts/coverage_gate.py \
+            --report coverage.xml \
+            --min "${COVERAGE_MINIMUM}" \
+            --tolerance "${COVERAGE_TOLERANCE}" \
+            ${{ steps.baseline.outputs.found == 'true' && '--baseline baseline/coverage-baseline.json' || '' }} \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # On main, publish the new baseline for future pull requests to compare to.
+      - name: Record baseline for main
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          uv run python scripts/coverage_gate.py \
+            --report coverage.xml \
+            --min "${COVERAGE_MINIMUM}" \
+            --write-baseline coverage-baseline.json \
+            --ref "${GITHUB_SHA}"
+
+      - name: Upload baseline
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-baseline
+          path: coverage-baseline.json
+          retention-days: 90
+
+      - name: Upload HTML coverage report
+        if: always()
+        run: uv run coverage html -d htmlcov
+
+      - name: Publish coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: htmlcov
+          retention-days: 14
+
+  # -------------------------------------------------------------------------
+  # Container build. Runs concurrently with the test jobs purely to warm the
+  # registry-backed layer cache, so the release build in cd.yml is a cache hit
+  # and takes seconds rather than minutes. Nothing is pushed from here.
+  # -------------------------------------------------------------------------
+  docker-build:
+    name: Docker build
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          push: false
+          load: true
+          tags: migration-tracker:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          # mode=max caches intermediate stages too, so the builder stage - the
+          # expensive one - is reused rather than rebuilt.
+          cache-from: type=gha,scope=${{ github.workflow }}
+          cache-to: type=gha,mode=max,scope=${{ github.workflow }}
+          provenance: false
+
+      # A container that cannot start is a failure worth catching before the
+      # deploy job, not during it.
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 8000:8000 \
+            -e APP_DATABASE_URL=postgresql+psycopg://u:p@127.0.0.1:5432/none \
+            migration-tracker:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz >/dev/null 2>&1; then
+              echo "container healthy after ${attempt}s"
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container failed to become healthy"
+          docker logs smoke
+          docker rm -f smoke >/dev/null
+          exit 1
+
+      - name: Verify the image runs as a non-root user
+        run: |
+          uid=$(docker run --rm --entrypoint id migration-tracker:ci -u)
+          echo "container uid: ${uid}"
+          test "${uid}" != "0"
+
+  # -------------------------------------------------------------------------
+  # Vulnerability scanning. Independent of the tests, so it runs alongside them.
+  # -------------------------------------------------------------------------
+  security-scan:
+    name: Security scan
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          push: false
+          load: true
+          tags: migration-tracker:scan
+          cache-from: type=gha,scope=${{ github.workflow }}
+          provenance: false
+
+      - name: Trivy filesystem and image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: migration-tracker:scan
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload results to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-image
+
+      # Fail the build only on fixable CRITICAL findings. HIGH findings are
+      # reported to code scanning for triage without blocking every merge.
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: migration-tracker:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # -------------------------------------------------------------------------
+  # Infrastructure checks. Fast, and independent of everything above.
+  # -------------------------------------------------------------------------
+  terraform-validate:
+    name: Terraform validate
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        stack:
+          - terraform/modules/vpc
+          - terraform/modules/eks
+          - terraform/modules/rds
+          - terraform/modules/s3
+          - terraform/modules/ecr
+          - terraform/modules/ecs
+          - terraform/modules/irsa
+          - terraform/modules/iam-app
+          - terraform/modules/github-oidc
+          - terraform/modules/platform
+          - terraform/envs/staging
+          - terraform/envs/prod
+          - terraform/bootstrap
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - name: Format check
+        working-directory: ${{ matrix.stack }}
+        run: terraform fmt -check -recursive
+
+      - name: Init without backend
+        working-directory: ${{ matrix.stack }}
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        working-directory: ${{ matrix.stack }}
+        run: terraform validate
+
+  kubernetes-validate:
+    name: Kubernetes manifests
+    needs: changes
+    if: needs.changes.outputs.k8s == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        overlay: [staging, prod]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-kubectl@v5
+
+      - name: Render overlay
+        run: kubectl kustomize deploy/k8s/overlays/${{ matrix.overlay }} > rendered.yaml
+
+      - name: Fail on unresolved placeholders
+        run: |
+          if grep -n 'PLACEHOLDER' rendered.yaml; then
+            echo "::error::overlay ${{ matrix.overlay }} still contains PLACEHOLDER values"
+            exit 1
+          fi
+
+  # -------------------------------------------------------------------------
+  # Single required status check. Protect main with this one job rather than
+  # listing every job above, so adding a job never means editing branch rules.
+  #
+  # Skipped upstream jobs report 'skipped', which is a pass. Only 'failure' and
+  # 'cancelled' block the merge.
+  # -------------------------------------------------------------------------
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs:
+      - lint
+      - typecheck
+      - unit
+      - integration
+      - coverage-gate
+      - docker-build
+      - security-scan
+      - terraform-validate
+      - kubernetes-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate upstream results
+        run: |
+          echo "results: ${{ join(needs.*.result, ', ') }}"
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "::error::one or more CI jobs failed"
+            exit 1
+          fi
+          if [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "::error::one or more CI jobs were cancelled"
+            exit 1
+          fi
+          echo "all CI jobs passed or were skipped"
+
+  # -------------------------------------------------------------------------
+  # Failure notification. Only fires for main - pull request failures are
+  # already visible to their author, and paging the channel for them trains
+  # people to ignore the channel.
+  # -------------------------------------------------------------------------
+  notify-failure:
+    name: Notify on failure
+    needs: ci-complete
+    if: always() && needs.ci-complete.result == 'failure' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post to Slack
+        uses: slackapi/slack-github-action@v4
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "CI failed on main",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "CI failed on main" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repository*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Commit*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>" },
+                    { "type": "mrkdwn", "text": "*Author*\n${{ github.actor }}" },
+                    { "type": "mrkdwn", "text": "*Run*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>" }
+                  ]
+                }
+              ]
+            }

@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: migration-tracker
+
+resources:
+  - ../../base
+
+replicas:
+  - name: migration-tracker
+    count: 3
+
+patches:
+  - path: deployment-patch.yaml
+
+# CD substitutes the repository and the digest it just pushed.
+images:
+  - name: migration-tracker
+    newName: PLACEHOLDER_IMAGE_REPO
+    digest: PLACEHOLDER_IMAGE_DIGEST
