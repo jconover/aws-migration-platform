@@ -56,22 +56,32 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          # Every filter includes the pipeline's own definition. Without that, a
+          # change to ci.yml or the composite action skips every job it governs,
+          # so a broken pipeline edit reports green and merges unvalidated.
           filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
             python:
+              - *ci
               - 'app/**'
               - 'tests/**'
               - 'scripts/**'
               - 'pyproject.toml'
               - 'uv.lock'
             docker:
+              - *ci
               - 'app/**'
               - 'Dockerfile'
               - '.dockerignore'
               - 'pyproject.toml'
               - 'uv.lock'
             terraform:
+              - *ci
               - 'terraform/**'
             k8s:
+              - *ci
               - 'deploy/**'
 
   # -------------------------------------------------------------------------
