@@ -18,7 +18,10 @@ runs:
   using: composite
   steps:
     - name: Install uv with dependency caching
-      uses: astral-sh/setup-uv@v10
+      # setup-uv publishes no floating major tag beyond v7, so this is pinned
+      # to an exact release. Verify with:
+      #   gh api repos/astral-sh/setup-uv/tags --jq '.[].name'
+      uses: astral-sh/setup-uv@v10.0.1
       with:
         version: "0.9.9"
         python-version: ${{ inputs.python-version }}

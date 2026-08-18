@@ -131,12 +131,12 @@ jobs:
           retention-days: 5
 
   apply:
-    name: Apply (${{ inputs.environment || 'staging' }})
+    name: Apply (${{ github.event.inputs.environment || 'staging' }})
     needs: plan
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: ${{ inputs.environment || 'staging' }}-infra
+    environment: ${{ github.event.inputs.environment || 'staging' }}-infra
     permissions:
       contents: read
       id-token: write
@@ -158,11 +158,11 @@ jobs:
       - name: Download the approved plan
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-${{ inputs.environment || 'staging' }}
-          path: terraform/envs/${{ inputs.environment || 'staging' }}
+          name: tfplan-${{ github.event.inputs.environment || 'staging' }}
+          path: terraform/envs/${{ github.event.inputs.environment || 'staging' }}
 
       - name: Init
-        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        working-directory: terraform/envs/${{ github.event.inputs.environment || 'staging' }}
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
@@ -170,11 +170,11 @@ jobs:
             -backend-config="kms_key_id=${{ vars.TF_STATE_KMS_KEY_ARN }}"
 
       - name: Apply the saved plan
-        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        working-directory: terraform/envs/${{ github.event.inputs.environment || 'staging' }}
         run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
 
       - name: Publish outputs
-        working-directory: terraform/envs/${{ inputs.environment || 'staging' }}
+        working-directory: terraform/envs/${{ github.event.inputs.environment || 'staging' }}
         run: |
           {
             echo "### Terraform outputs"

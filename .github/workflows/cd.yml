@@ -112,7 +112,7 @@ jobs:
   deploy-staging-eks:
     name: Deploy to EKS (staging)
     needs: publish
-    if: github.event_name == 'push' || inputs.target != 'ecs'
+    if: github.event_name == 'push' || github.event.inputs.target != 'ecs'
     uses: ./.github/workflows/reusable-deploy-eks.yml
     with:
       environment: staging
@@ -158,7 +158,7 @@ jobs:
   deploy-production-eks:
     name: Deploy to EKS (production)
     needs: [publish, smoke-staging]
-    if: github.event_name == 'push' || inputs.environment == 'production'
+    if: github.event_name == 'push' || github.event.inputs.environment == 'production'
     uses: ./.github/workflows/reusable-deploy-eks.yml
     with:
       environment: production
@@ -173,10 +173,10 @@ jobs:
   deploy-ecs:
     name: Deploy to ECS Fargate
     needs: publish
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'ecs' || inputs.target == 'both')
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'ecs' || github.event.inputs.target == 'both')
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ inputs.environment }}
+    environment: ${{ github.event.inputs.environment }}
     permissions:
       contents: read
       id-token: write

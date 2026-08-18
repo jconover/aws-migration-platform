@@ -396,12 +396,24 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
+      # Code scanning requires GitHub Advanced Security on private repositories.
+      # Where it is unavailable the upload 403s, which must not fail the build -
+      # the CRITICAL gate below is the actual control and always runs.
       - name: Upload results to code scanning
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy.sarif
           category: trivy-image
+
+      - name: Publish scan results as an artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-sarif
+          path: trivy.sarif
+          retention-days: 14
 
       # Fail the build only on fixable CRITICAL findings. HIGH findings are
       # reported to code scanning for triage without blocking every merge.
@@ -478,10 +490,37 @@ jobs:
       - name: Render overlay
         run: kubectl kustomize deploy/k8s/overlays/${{ matrix.overlay }} > rendered.yaml
 
-      - name: Fail on unresolved placeholders
+      # The committed overlays contain placeholders by design - CD substitutes
+      # real values at deploy time. So rather than assert they are absent, apply
+      # the same substitutions CD applies and assert none survive. That tests the
+      # contract between the manifests and reusable-deploy-eks.yml, and fails if
+      # someone adds a placeholder without teaching the deploy job about it.
+      - name: Verify every placeholder is substitutable
+        working-directory: deploy/k8s
         run: |
-          if grep -n 'PLACEHOLDER' rendered.yaml; then
-            echo "::error::overlay ${{ matrix.overlay }} still contains PLACEHOLDER values"
+          set -euo pipefail
+          IMAGE="123456789012.dkr.ecr.us-east-1.amazonaws.com/app@sha256:$(printf '0%.0s' {1..64})"
+          image_repo="${IMAGE%@*}"
+          image_digest="${IMAGE##*@}"
+
+          sed -i "s|PLACEHOLDER_DB_SECRET_ARN|arn:aws:secretsmanager:us-east-1:123456789012:secret:ci-test|" base/secretproviderclass.yaml
+          sed -i "s|eks.amazonaws.com/role-arn: PLACEHOLDER|eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ci-test|" base/serviceaccount.yaml
+          sed -i "s|value: placeholder|value: ci-test.rds.amazonaws.com|" base/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_REPO|${image_repo}|" overlays/${{ matrix.overlay }}/kustomization.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_DIGEST|${image_digest}|" overlays/${{ matrix.overlay }}/kustomization.yaml
+
+          kubectl kustomize overlays/${{ matrix.overlay }} > substituted.yaml
+          if grep -ni 'placeholder' substituted.yaml; then
+            echo "::error::overlay ${{ matrix.overlay }} has a placeholder that CD does not substitute"
+            exit 1
+          fi
+          echo "all placeholders substituted cleanly"
+
+      - name: Confirm the image is pinned by digest
+        working-directory: deploy/k8s
+        run: |
+          if ! grep -qE 'image: .+@sha256:[0-9a-f]{64}' substituted.yaml; then
+            echo "::error::rendered image reference is not digest-pinned"
             exit 1
           fi
 
