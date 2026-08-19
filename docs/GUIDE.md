@@ -3,6 +3,12 @@
 Seven other documents in this folder explain *what was built* and *how it
 works*. This one explains *why it exists* and *what to do with it*.
 
+> **Shareable version:** <https://claude.ai/code/artifact/76e3cb56-6d6e-45af-8085-1fa205fe2bcf>
+> A published web version of this guide, for sending to someone who does not
+> have access to this repository. It is private by default — share it from the
+> page's own share menu. This file stays canonical; if you edit it, republish so
+> the two do not drift.
+
 ---
 
 ## The problem

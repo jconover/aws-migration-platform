@@ -13,7 +13,8 @@ are proven by real weight before any customer workload depends on them.
 
 **Start here:** [docs/GUIDE.md](docs/GUIDE.md) — what this solves, when you
 would and would not use it, and four ways to pick it up depending on why you
-are here.
+are here. Also published as a shareable page:
+[Migration Field Guide](https://claude.ai/code/artifact/76e3cb56-6d6e-45af-8085-1fa205fe2bcf) (private; share from the page's share menu).
 
 | Document | Contents |
 | --- | --- |
