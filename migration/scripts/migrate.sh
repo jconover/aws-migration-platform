@@ -14,6 +14,7 @@
 #   ./migrate.sh cutover   snapshot, restore and verify in one gated sequence
 #   ./migrate.sh rollback  point back at the source and report
 #   ./migrate.sh down      remove the on-premises source
+#   ./migrate.sh doctor    check tooling, cluster reachability and demo state
 #
 # Target selection:
 #   TARGET_DSN unset  -> a local Postgres container stands in for RDS, so the
@@ -43,6 +44,26 @@ die()  { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
 require() {
   command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed"
+}
+
+# Fail fast with a readable message instead of letting kubectl print a wall of
+# "Unhandled Error" when the cluster simply is not on this network.
+cluster_reachable() {
+  kubectl version -o json --request-timeout=5s >/dev/null 2>&1
+}
+
+require_cluster() {
+  require kubectl
+  [ -f "${KUBECONFIG_PATH}" ] || die "kubeconfig not found at ${KUBECONFIG_PATH} (override with KUBECONFIG_PATH=...)"
+  if ! cluster_reachable; then
+    local endpoint
+    endpoint="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo unknown)"
+    die "cannot reach the cluster at ${endpoint}
+    The kubeconfig is fine; nothing is answering. Usually one of:
+      - this machine is on a different network from the cluster
+      - the cluster is powered off
+    Check with: $0 doctor"
+  fi
 }
 
 source_pod() {
@@ -79,7 +100,7 @@ ensure_target() {
 
 # --------------------------------------------------------------------------
 cmd_up() {
-  require kubectl
+  require_cluster
   log "Deploying the on-premises source onto Talos"
   kubectl apply -f "${MANIFESTS}/namespace.yaml"
   kubectl apply -f "${MANIFESTS}/postgres.yaml"
@@ -99,7 +120,9 @@ cmd_up() {
 cmd_status() {
   require kubectl
   log "On-premises (Talos, namespace ${NAMESPACE})"
-  if kubectl get ns "${NAMESPACE}" >/dev/null 2>&1; then
+  if ! cluster_reachable; then
+    info "cluster unreachable from this machine - see: $0 doctor"
+  elif kubectl get ns "${NAMESPACE}" >/dev/null 2>&1; then
     kubectl -n "${NAMESPACE}" get pods,pvc,svc 2>/dev/null || true
     local pod; pod="$(source_pod)"
     if [ -n "${pod}" ]; then
@@ -123,7 +146,7 @@ cmd_status() {
 }
 
 cmd_snapshot() {
-  require kubectl
+  require_cluster
   local pod; pod="$(source_pod)"
   [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
 
@@ -169,6 +192,7 @@ cmd_restore() {
 }
 
 cmd_verify() {
+  require_cluster
   local dsn; dsn="$(ensure_target)"
   local pod; pod="$(source_pod)"
   [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
@@ -213,8 +237,67 @@ cmd_rollback() {
   info "The state machine returns it to 'assessed', so assessment work is not lost."
 }
 
+cmd_doctor() {
+  log "Preflight"
+
+  for tool in kubectl docker uv; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      info "[ ok ] ${tool} installed"
+    else
+      info "[fail] ${tool} NOT installed"
+    fi
+  done
+
+  if [ -f "${KUBECONFIG_PATH}" ]; then
+    info "[ ok ] kubeconfig ${KUBECONFIG_PATH}"
+  else
+    info "[fail] kubeconfig missing: ${KUBECONFIG_PATH}"
+    return 1
+  fi
+
+  local endpoint
+  endpoint="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo unknown)"
+  if cluster_reachable; then
+    info "[ ok ] cluster reachable at ${endpoint}"
+    local nodes
+    nodes="$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+    info "       ${nodes} node(s) ready"
+
+    if kubectl get ns "${NAMESPACE}" >/dev/null 2>&1; then
+      local pod
+      pod="$(source_pod)"
+      if [ -n "${pod}" ]; then
+        local rows
+        rows="$(kubectl -n "${NAMESPACE}" exec "${pod}" -- \
+          psql -U tracker_admin -d migration_tracker -tAc \
+          'SELECT count(*) FROM workloads' 2>/dev/null | tr -d ' \r')"
+        info "[ ok ] source deployed: pod ${pod}, ${rows:-?} workload rows"
+      else
+        info "[warn] namespace ${NAMESPACE} exists but no database pod - run: $0 up"
+      fi
+    else
+      info "[warn] source not deployed - run: $0 up"
+    fi
+  else
+    info "[fail] cluster NOT reachable at ${endpoint}"
+    info "       this machine: $(ipconfig getifaddr en0 2>/dev/null || echo unknown)"
+    info "       the kubeconfig is fine; nothing is answering on that address."
+    info "       usually a different network, or the cluster is powered off."
+  fi
+
+  if [ -n "${TARGET_DSN:-}" ]; then
+    info "[ ok ] target: TARGET_DSN is set (real database)"
+    info "       note: RDS is private by design. From outside the VPC this will"
+    info "       not connect - see docs/MIGRATION-DEMO.md, 'Against real RDS'."
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${STANDIN_CONTAINER}"; then
+    info "[ ok ] target: local stand-in running on port ${STANDIN_PORT}"
+  else
+    info "[info] target: none yet - created on first restore"
+  fi
+}
+
 cmd_down() {
-  require kubectl
+  require_cluster
   log "Removing the on-premises source"
   kubectl delete namespace "${NAMESPACE}" --ignore-not-found --wait=false
   docker rm -f "${STANDIN_CONTAINER}" >/dev/null 2>&1 || true
@@ -230,6 +313,7 @@ case "${1:-}" in
   verify)   cmd_verify ;;
   cutover)  cmd_cutover ;;
   rollback) cmd_rollback ;;
+  doctor)   cmd_doctor ;;
   down)     cmd_down ;;
   *)
     sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

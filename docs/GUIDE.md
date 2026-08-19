@@ -163,6 +163,7 @@ found.
 Needs any Kubernetes cluster. Set `KUBECONFIG_PATH` if it is not the default.
 
 ```bash
+./migration/scripts/migrate.sh doctor    # tooling, cluster reachability, state
 ./migration/scripts/migrate.sh up        # deploy the "datacentre" source
 ./migration/scripts/migrate.sh status    # what exists on each side
 ./migration/scripts/migrate.sh cutover   # snapshot → restore → verify
@@ -199,6 +200,12 @@ docker exec migration-target-rds psql -U postgres -d migration_tracker \
 Start in a sandbox account. Every stack passes `validate`, but validation cannot
 catch service quotas, IAM boundaries, or region-specific behaviour, and nothing
 here has been applied against a live account.
+
+**One thing that will surprise you:** RDS is private by design — no public
+access, and its subnets have no default route. Running the migration against it
+from your laptop will not connect. Port-forward through a rehost instance over
+SSM, or run the migration inside the VPC; both are written up in
+[MIGRATION-DEMO.md](MIGRATION-DEMO.md#against-real-rds).
 
 ### Path D — Take the process, leave the code
 
