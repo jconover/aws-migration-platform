@@ -127,6 +127,137 @@ kubectl get pods -n migration-tracker
 kubectl logs deployment/migration-tracker -n migration-tracker
 ```
 
+## 7. Building each landing target
+
+Section 2 applies the whole environment. This section is what to change when you
+want a specific target, and how to confirm it actually works once it exists.
+
+All three are modules on the same VPC, database and least-privilege policy, so
+enabling one is a variable change followed by an apply. Staging already has EKS
+and the EC2 rehost target enabled; production has EKS only.
+
+| Target | Variable | Default |
+| --- | --- | --- |
+| EKS | *(always on)* | enabled |
+| ECS Fargate | `enable_ecs` | `false` |
+| EC2 rehost ASG | `enable_ec2_rehost` | `false` |
+
+### EKS — the default target
+
+Provisioned by every environment. After `terraform apply`:
+
+```bash
+cd terraform/envs/staging
+aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
+  --region "$(terraform output -raw region)"
+
+kubectl get nodes
+kubectl -n migration-tracker get deploy,svc,ingress
+```
+
+Nothing serves traffic until the two controllers in section 5 are installed —
+the Ingress has no controller to satisfy it, and the pod will not start without
+the CSI driver to mount its database secret.
+
+### ECS Fargate
+
+```hcl
+# terraform/envs/staging/main.tf
+module "platform" {
+  # ...
+  enable_ecs          = true
+  ecs_desired_count   = 2
+  ecs_container_image = "<account>.dkr.ecr.<region>.amazonaws.com/migration-tracker-staging@sha256:..."
+}
+```
+
+```bash
+terraform apply
+```
+
+The module creates the cluster, an internal ALB, the task definition, the service
+with a deployment circuit breaker, and CPU target-tracking autoscaling. It also
+opens Postgres from the task security group — that rule lives in
+`modules/platform/ecs.tf` rather than in the rds module, because routing it
+through rds inputs would make rds depend on a module that already depends on it.
+
+Confirm it converged:
+
+```bash
+aws ecs describe-services \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --services "$(terraform output -raw ecs_service_name)" \
+  --query 'services[0].{running:runningCount,desired:desiredCount,status:status}'
+```
+
+Deploy a new image to it with the `ecs` target of the CD workflow:
+
+```bash
+gh workflow run cd.yml -f environment=staging -f target=ecs
+```
+
+### EC2 rehost — plain instances
+
+```hcl
+enable_ec2_rehost    = true
+ec2_instance_type    = "t3.small"
+ec2_desired_capacity = 2
+ec2_container_image  = "<account>.dkr.ecr.<region>.amazonaws.com/migration-tracker-staging@sha256:..."
+```
+
+```bash
+terraform apply
+```
+
+This creates a launch template, an ASG across the private subnets, an internal
+ALB, and the IAM instance profile. Instances bootstrap from user data: they pull
+the image, fetch database credentials from Secrets Manager using the instance
+role, write a systemd unit, and block until the application answers its health
+check.
+
+Confirm instances are in service — the ASG uses **ELB** health checks, so
+`InService` means the application is genuinely responding, not merely that the
+instance booted:
+
+```bash
+aws autoscaling describe-auto-scaling-groups \
+  --auto-scaling-group-names "$(terraform output -raw ec2_autoscaling_group_name)" \
+  --query 'AutoScalingGroups[0].Instances[].{id:InstanceId,health:HealthStatus,state:LifecycleState}'
+```
+
+**There is no SSH.** To get a shell, or to read the bootstrap log when an
+instance never reaches `InService`:
+
+```bash
+aws ssm start-session --target <instance-id>
+sudo tail -100 /var/log/bootstrap.log
+```
+
+Roll the fleet onto a new image or new user data by updating the variable and
+applying — `instance_refresh` replaces instances gradually and rolls back
+automatically if the new ones fail to become healthy:
+
+```bash
+aws autoscaling describe-instance-refreshes \
+  --auto-scaling-group-name "$(terraform output -raw ec2_autoscaling_group_name)" \
+  --query 'InstanceRefreshes[0].{status:Status,pct:PercentageComplete}'
+```
+
+### Migrating data into the environment you just built
+
+Once RDS exists, move the source data in and verify it. RDS has no public route,
+so this runs through an SSM port-forward or from inside the VPC — the full
+procedure is in
+[MIGRATION-DEMO.md](MIGRATION-DEMO.md#against-real-rds).
+
+### Tearing a target back down
+
+Set the flag to `false` and apply. The module and everything in it is removed;
+the VPC, database and policy are untouched, because they belong to the platform
+rather than to any one target.
+
+---
+
 ## Troubleshooting
 
 **`Error: creating IAM OIDC Provider: EntityAlreadyExists`** - the provider

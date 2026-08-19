@@ -37,3 +37,33 @@ output "alerts_topic_arn" {
   value       = module.platform.alerts_topic_arn
   description = "SNS topic for alarms and pipeline failures."
 }
+
+output "region" {
+  value       = var.region
+  description = "Deployment region, for CLI invocations."
+}
+
+output "ecs_cluster_name" {
+  value       = module.platform.ecs_cluster_name
+  description = "ECS cluster name when the Fargate target is enabled, else null."
+}
+
+output "ecs_service_name" {
+  value       = module.platform.ecs_service_name
+  description = "ECS service name when the Fargate target is enabled, else null."
+}
+
+output "ecs_task_definition_family" {
+  value       = module.platform.ecs_task_definition_family
+  description = "Task definition family for the ECS deploy workflow."
+}
+
+output "ec2_autoscaling_group_name" {
+  value       = module.platform.ec2_autoscaling_group_name
+  description = "ASG name when the EC2 rehost target is enabled, else null."
+}
+
+output "ec2_load_balancer_dns_name" {
+  value       = module.platform.ec2_load_balancer_dns_name
+  description = "Rehost target load balancer DNS name."
+}

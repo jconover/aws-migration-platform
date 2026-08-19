@@ -3,6 +3,15 @@
 Operational procedures for the migration programme. Written to be followed at
 03:00 by someone who did not write it.
 
+| I need to... | Go to |
+| --- | --- |
+| Cut a workload over | [Cutover](#cutover) |
+| Undo a bad release or a failed cutover | [Rollback](#rollback) |
+| Bring the on-premises cluster back after an outage | [Source estate recovery](#source-estate-recovery-on-premises-talos) |
+| Build or rebuild an AWS target with Terraform | [SETUP.md §7](SETUP.md#7-building-each-landing-target) |
+| Move data into a target and verify it | [MIGRATION-DEMO.md](MIGRATION-DEMO.md#against-real-rds) |
+| Diagnose a live incident | [Common incidents](#common-incidents) |
+
 ---
 
 ## Cutover
@@ -97,6 +106,131 @@ Time-critical. Follow in order:
 7. **Record what happened** in the tracker: `PATCH /api/v1/workloads/{id}/status`
    with `rolled_back`. The state machine returns it to `assessed`, not
    `discovered` - assessment work is not lost.
+
+---
+
+## Source estate recovery (on-premises Talos)
+
+The source estate is still production until the last workload is validated, so
+bringing it back after an outage is a migration procedure, not someone else's
+problem. This section was written during an actual recovery: a storm took mains
+power, all three Talos nodes went down, and the sequence below is what was run.
+
+### 1. Confirm it is the cluster, not your route to it
+
+`network is unreachable` and `no route to host` mean different things, and
+neither necessarily means the cluster is down.
+
+```bash
+./migration/scripts/migrate.sh doctor
+```
+
+The report names the endpoint and this machine's address, which is usually
+enough:
+
+```
+[fail] cluster NOT reachable at https://192.168.70.9:6443
+       this machine: 192.168.10.14
+       the kubeconfig is fine; nothing is answering on that address.
+```
+
+A laptop on a different subnet from the cluster produces exactly the same
+symptom as a powered-off cluster. Check which you have before touching anything.
+
+### 2. Power on, control plane first
+
+Bring the control-plane nodes up together rather than one at a time. etcd needs a
+quorum — with three members, two must be present before the API server will
+serve. Staggering power-on by several minutes leaves a single member unable to
+form a quorum, which looks like a broken cluster and is not.
+
+### 3. Watch the nodes rejoin
+
+```bash
+kubectl get nodes -w
+```
+
+All members should reach `Ready`. Expect a few minutes: etcd elects a leader,
+the API server starts, then kubelets report in.
+
+If a node does not rejoin and you have a working `talosconfig`, the machine API
+is where to look next. These need PKI that a kubeconfig does not provide — see
+[GUIDE.md](GUIDE.md) if `talosctl` reports `talos config file is empty`:
+
+```bash
+talosctl -n <node-ip> health
+talosctl -n <node-ip> dmesg | tail -50
+talosctl -n <node-ip> service etcd status
+```
+
+### 4. Expect stranded pods, and let the StatefulSet fix them
+
+A pod whose node vanished mid-write is commonly left in `Unknown`:
+
+```
+pod/legacy-postgres-0   0/1   Unknown   0   17h
+```
+
+**Wait before intervening.** Once the node rejoins, Kubernetes deletes the
+stranded pod and the StatefulSet recreates it. In the recovery this section
+documents, that happened without any manual step: the pod was rescheduled onto a
+healthy node and reached `1/1 Running` in about 13 seconds once the volume
+attached.
+
+Intervene only if it stays `Unknown` after the node is `Ready`:
+
+```bash
+kubectl -n legacy-onprem delete pod legacy-postgres-0
+```
+
+That is safe. The PVC is a separate object and is not affected — deleting the pod
+only discards the stranded pod record.
+
+**Do not delete the PVC.** That is the one destructive step available here, and
+it throws away the data you are trying to recover.
+
+### 5. Confirm storage reattached and the data survived
+
+Longhorn reattaches the volume to whichever node the pod lands on. Watch for a
+volume stuck detaching, or a degraded replica rebuild:
+
+```bash
+kubectl -n longhorn-system get volumes.longhorn.io
+kubectl -n legacy-onprem get pvc
+```
+
+Then verify the data itself, which is the only check that actually matters:
+
+```bash
+./migration/scripts/migrate.sh doctor
+```
+
+```
+[ ok ] source deployed: pod legacy-postgres-0 (Running), 20 workload rows
+```
+
+### 6. Re-verify before trusting the source again
+
+An unclean database shutdown is exactly the condition that produces a source
+which *looks* healthy and is subtly not. Before resuming any migration activity,
+re-run the comparison:
+
+```bash
+./migration/scripts/migrate.sh snapshot
+./migration/scripts/migrate.sh verify
+```
+
+If the source has drifted from a target populated before the outage, the gate
+reports it as a checksum mismatch rather than a row-count difference — the same
+signal, from the same tooling, for a different cause.
+
+### If the source is unrecoverable
+
+Rebuilding the source estate is not the goal — completing the migration is. If a
+workload's source cannot be recovered but its target is already populated and
+verified, that workload's rollback option is gone. Record that explicitly rather
+than leaving it implicit: it changes the risk profile of every remaining step,
+and the cutover for that workload is now one-way.
 
 ---
 
