@@ -1,17 +1,16 @@
 # The on-premises database. Longhorn-backed persistent storage on bare metal,
 # which is what makes this a genuine migration source rather than a fixture:
 # the data survives pod restarts and has to be moved deliberately.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: legacy-postgres
-  namespace: legacy-onprem
-type: Opaque
-stringData:
-  POSTGRES_USER: tracker_admin
-  POSTGRES_PASSWORD: onprem-legacy-password
-  POSTGRES_DB: migration_tracker
----
+# The legacy-postgres Secret is deliberately NOT defined here. migrate.sh
+# generates a random password and creates it at deploy time, so no credential is
+# committed to this repository - the same rule the AWS side follows, where RDS
+# generates its own password into Secrets Manager and Terraform never sees it.
+#
+# Deploying these manifests without migrate.sh? Create it first:
+#   kubectl -n legacy-onprem create secret generic legacy-postgres \
+#     --from-literal=POSTGRES_USER=tracker_admin \
+#     --from-literal=POSTGRES_DB=migration_tracker \
+#     --from-literal=POSTGRES_PASSWORD="$(openssl rand -base64 24)"
 apiVersion: v1
 kind: Service
 metadata:

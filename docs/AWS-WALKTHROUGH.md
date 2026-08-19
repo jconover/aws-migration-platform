@@ -3,8 +3,8 @@
 You drive; nothing here runs itself. Every command is yours to execute, in
 order, with what to expect and what it costs while running.
 
-Written against account **111122223333** in **us-east-1**, with the preflight
-findings for that account already applied.
+Written against a real account in **us-east-1**. Replace `<account-id>` with
+your own throughout — `aws sts get-caller-identity` prints it.
 
 > **Running cost of full staging: about $0.51/hour, roughly $12/day.**
 > Nothing is free after Step 4. The teardown in Step 11 is the important one,
@@ -36,10 +36,11 @@ traffic simply routes over the NAT gateway instead.
 
 ## Step 0 — Preflight
 
-Already checked for this account, with results:
+Run these four before anything else. The results below are from a real
+account and show what each one is telling you:
 
 ```bash
-aws sts get-caller-identity          # user/terraform, account 111122223333
+aws sts get-caller-identity          # note the Account field
 aws iam list-open-id-connect-providers
 aws ec2 describe-vpcs --query 'length(Vpcs)'
 aws ec2 describe-addresses --query 'length(Addresses)'
@@ -47,7 +48,7 @@ aws ec2 describe-addresses --query 'length(Addresses)'
 
 | Check | Result | Consequence |
 | --- | --- | --- |
-| Credentials | `user/terraform`, `AdministratorAccess` | fine |
+| Credentials | an IAM principal that can create VPC, EKS, RDS and IAM | required |
 | GitHub OIDC provider | **already exists** | `create_github_oidc_provider` is already set to `false` in `envs/staging/main.tf`. Leave it |
 | VPCs | 3 of 5 used | staging adds 1 → 4. Fits, but little headroom |
 | Elastic IPs | 0 of 5 used | fine, NAT needs 1 |
@@ -62,7 +63,7 @@ OIDC one in particular decides whether apply succeeds.
 ```bash
 cd terraform/bootstrap
 terraform init
-terraform apply -var="state_bucket_name=tf-state-111122223333-migration"
+terraform apply -var="state_bucket_name=tf-state-<account-id>-migration"
 ```
 
 Bucket names are globally unique; change the suffix if it is taken. Note the
@@ -86,12 +87,12 @@ Edit it:
 
 ```hcl
 region               = "us-east-1"
-artifact_bucket_name = "migration-tracker-staging-111122223333"
-github_repository    = "jconover/the-alldredge-project"
+artifact_bucket_name = "migration-tracker-staging-<account-id>"
+github_repository    = "<owner>/<repo>"
 
 # Optional: grants your IAM user cluster-admin on EKS. Without an entry here
 # nobody can run kubectl against the cluster, including you.
-cluster_admin_role_arns = ["arn:aws:iam::111122223333:user/terraform"]
+cluster_admin_role_arns = ["arn:aws:iam::<account-id>:user/terraform"]
 ```
 
 The `cluster_admin_role_arns` line matters. The cluster is created with
@@ -105,7 +106,7 @@ if you skip this.
 
 ```bash
 terraform init \
-  -backend-config="bucket=tf-state-111122223333-migration" \
+  -backend-config="bucket=tf-state-<account-id>-migration" \
   -backend-config="region=us-east-1" \
   -backend-config="kms_key_id=<kms-arn-from-step-1>"
 ```
@@ -285,7 +286,7 @@ aws ssm start-session --target "$INSTANCE" \
 Leave that running. In a second shell:
 
 ```bash
-cd /Users/justin/Projects/the-alldredge-project
+cd <repo-root>
 
 SECRET=$(aws secretsmanager get-secret-value \
   --secret-id "$(terraform -chdir=terraform/envs/staging output -raw database_secret_arn)" \

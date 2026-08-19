@@ -130,8 +130,8 @@ The report names the endpoint and this machine's address, which is usually
 enough:
 
 ```
-[fail] cluster NOT reachable at https://192.168.70.9:6443
-       this machine: 192.168.10.14
+[fail] cluster NOT reachable at https://10.0.0.9:6443
+       this machine: 10.9.0.14
        the kubeconfig is fine; nothing is answering on that address.
 ```
 

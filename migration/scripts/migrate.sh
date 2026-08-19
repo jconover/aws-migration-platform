@@ -103,6 +103,18 @@ cmd_up() {
   require_cluster
   log "Deploying the on-premises source onto Talos"
   kubectl apply -f "${MANIFESTS}/namespace.yaml"
+
+  # Generate the database credential rather than committing one. Created only if
+  # absent, so re-running `up` never invalidates the password an already running
+  # database is using.
+  if ! kubectl -n "${NAMESPACE}" get secret legacy-postgres >/dev/null 2>&1; then
+    info "generating the on-premises database credential"
+    kubectl -n "${NAMESPACE}" create secret generic legacy-postgres \
+      --from-literal=POSTGRES_USER=tracker_admin \
+      --from-literal=POSTGRES_DB=migration_tracker \
+      --from-literal=POSTGRES_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
+  fi
+
   kubectl apply -f "${MANIFESTS}/postgres.yaml"
 
   info "waiting for the on-premises database"
@@ -234,7 +246,11 @@ cmd_verify() {
     sleep 1
   done
 
-  local source_dsn="postgresql://tracker_admin:onprem-legacy-password@localhost:55501/migration_tracker"
+  local pgpass
+  pgpass="$(kubectl -n "${NAMESPACE}" get secret legacy-postgres \
+    -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d)"
+  [ -n "${pgpass}" ] || die "cannot read the on-premises database credential"
+  local source_dsn="postgresql://tracker_admin:${pgpass}@localhost:55501/migration_tracker"
   ( cd "${REPO_ROOT}" && uv run python -m migration.verify \
       --source "${source_dsn}" --target "${dsn}" --tables workloads )
 }
