@@ -11,8 +11,13 @@ are proven by real weight before any customer workload depends on them.
 
 ## Documentation
 
+**Start here:** [docs/GUIDE.md](docs/GUIDE.md) — what this solves, when you
+would and would not use it, and four ways to pick it up depending on why you
+are here.
+
 | Document | Contents |
 | --- | --- |
+| [docs/GUIDE.md](docs/GUIDE.md) | Why it exists, what it solves, how to use it |
 | [docs/MIGRATION-PLAN.md](docs/MIGRATION-PLAN.md) | Discovery, landing zone, wave execution, post-migration |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, security model, EKS vs ECS |
 | [docs/CICD-OPTIMIZATION.md](docs/CICD-OPTIMIZATION.md) | Pipeline bottlenecks and the measured rewrite |
