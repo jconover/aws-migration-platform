@@ -114,6 +114,30 @@ cmd_up() {
   kubectl -n "${NAMESPACE}" wait --for=condition=complete job/legacy-seed --timeout=5m
 
   kubectl -n "${NAMESPACE}" logs job/legacy-seed | tail -12
+
+  # The application half of the source estate. It needs an image the cluster can
+  # pull, built for the node architecture - Talos on bare metal is amd64, and a
+  # Mac builds arm64 by default. Without ONPREM_IMAGE the database is deployed
+  # on its own, which is enough for the data migration but is not the full
+  # picture: a real source estate has an application in front of its database.
+  if [ -n "${ONPREM_IMAGE:-}" ]; then
+    info "deploying the on-premises application: ${ONPREM_IMAGE}"
+    sed "s|PLACEHOLDER_ONPREM_IMAGE|${ONPREM_IMAGE}|" "${MANIFESTS}/app.yaml" \
+      | kubectl apply -f -
+    kubectl -n "${NAMESPACE}" rollout status deployment/legacy-tracker --timeout=5m
+    local lb
+    lb="$(kubectl -n "${NAMESPACE}" get svc legacy-tracker \
+      -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+    [ -n "${lb}" ] && info "application reachable at http://${lb}/healthz"
+  else
+    info "ONPREM_IMAGE not set - database only."
+    info "  To deploy the application too, build it for the cluster's"
+    info "  architecture and push somewhere the cluster can pull from:"
+    info "    docker buildx build --platform linux/amd64 \\"
+    info "      -t ghcr.io/<you>/migration-tracker:onprem --push ."
+    info "    ONPREM_IMAGE=ghcr.io/<you>/migration-tracker:onprem $0 up"
+  fi
+
   log "On-premises source is up"
 }
 
@@ -296,6 +320,19 @@ cmd_doctor() {
     info "       this machine: $(ipconfig getifaddr en0 2>/dev/null || echo unknown)"
     info "       the kubeconfig is fine; nothing is answering on that address."
     info "       usually a different network, or the cluster is powered off."
+  fi
+
+  # The application half of the source estate, reported separately because it is
+  # optional: the data migration works with the database alone.
+  if cluster_reachable && kubectl get ns "${NAMESPACE}" >/dev/null 2>&1; then
+    if kubectl -n "${NAMESPACE}" get deployment legacy-tracker >/dev/null 2>&1; then
+      local ready
+      ready="$(kubectl -n "${NAMESPACE}" get deployment legacy-tracker \
+        -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+      info "[ ok ] on-premises application: ${ready:-0} replica(s) ready"
+    else
+      info "[info] on-premises application not deployed (set ONPREM_IMAGE and re-run up)"
+    fi
   fi
 
   if [ -n "${TARGET_DSN:-}" ]; then

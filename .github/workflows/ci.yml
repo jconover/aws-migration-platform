@@ -458,6 +458,7 @@ jobs:
           - terraform/modules/ec2-rehost
           - terraform/modules/irsa
           - terraform/modules/iam-app
+          - terraform/modules/iam-access
           - terraform/modules/github-oidc
           - terraform/modules/platform
           - terraform/envs/staging

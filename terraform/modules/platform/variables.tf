@@ -200,3 +200,21 @@ variable "ec2_container_image" {
   type        = string
   default     = "public.ecr.aws/docker/library/nginx:alpine"
 }
+
+variable "enable_human_access_roles" {
+  description = "Create assumable roles for humans (break-glass, platform-engineer, developer, auditor)."
+  type        = bool
+  default     = false
+}
+
+variable "human_access_trusted_principals" {
+  description = "Principals permitted to assume the human access roles."
+  type        = list(string)
+  default     = []
+}
+
+variable "cloudtrail_log_group_name" {
+  description = "CloudWatch log group receiving CloudTrail events, so break-glass use can be alarmed."
+  type        = string
+  default     = ""
+}

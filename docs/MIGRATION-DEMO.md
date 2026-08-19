@@ -94,6 +94,62 @@ what a production cutover would do — no operator laptop in the data path at al
 Either way the verification gate behaves identically; only the network path
 changes.
 
+## Building the source workload on Talos
+
+`migrate.sh up` deploys the database and seeds the portfolio. That is enough for
+the data migration, but a real source estate has an application in front of its
+database, and that half is optional because it needs an image the cluster can
+pull.
+
+### Build it for the cluster's architecture
+
+Talos on bare metal is **amd64**; a Mac builds **arm64** by default. Getting this
+wrong produces `exec format error`, which reads like an application fault and is
+not one.
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -t ghcr.io/<you>/migration-tracker:onprem --push .
+```
+
+Any registry the cluster can reach works. A private package needs a pull secret
+in the `legacy-onprem` namespace:
+
+```bash
+kubectl -n legacy-onprem create secret docker-registry ghcr \
+  --docker-server=ghcr.io --docker-username=<you> --docker-password=<token>
+```
+
+### Deploy and verify
+
+```bash
+ONPREM_IMAGE=ghcr.io/<you>/migration-tracker:onprem ./migration/scripts/migrate.sh up
+./migration/scripts/migrate.sh doctor
+```
+
+`doctor` reports the application separately from the database:
+
+```
+[ ok ] source deployed: pod legacy-postgres-0 (Running), 20 workload rows
+[ ok ] on-premises application: 2 replica(s) ready
+```
+
+The Service is type `LoadBalancer`, so Cilium assigns an address from the pool.
+Check the estate is actually serving before migrating anything off it:
+
+```bash
+kubectl -n legacy-onprem get svc legacy-tracker
+curl "http://$(kubectl -n legacy-onprem get svc legacy-tracker \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/api/v1/workloads?wave=1"
+```
+
+Validate the manifests without deploying anything:
+
+```bash
+sed 's|PLACEHOLDER_ONPREM_IMAGE|example/image:tag|' deploy/onprem/app.yaml \
+  | kubectl apply --dry-run=server -f -
+```
+
 ## What actually happened
 
 Executed against the live cluster:

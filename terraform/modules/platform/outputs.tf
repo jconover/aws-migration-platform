@@ -97,3 +97,18 @@ output "ec2_session_manager_hint" {
   description = "How to reach a rehosted instance without SSH."
   value       = var.enable_ec2_rehost ? module.ec2_rehost[0].session_manager_command : null
 }
+
+output "human_access_role_arns" {
+  description = "Assumable human roles by tier, when enabled."
+  value       = var.enable_human_access_roles ? module.human_access[0].role_arns : null
+}
+
+output "break_glass_role_arn" {
+  description = "Emergency administrative role, when enabled."
+  value       = var.enable_human_access_roles ? module.human_access[0].break_glass_role_arn : null
+}
+
+output "break_glass_alarm_enabled" {
+  description = "False means CloudTrail was not wired up, so break-glass use is not alarmed."
+  value       = var.enable_human_access_roles ? module.human_access[0].alarm_enabled : null
+}

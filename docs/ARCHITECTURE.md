@@ -74,6 +74,45 @@ validation {
 role. Pinning to `repo:org/repo:environment:production` means only a job running
 in that protected environment can.
 
+### Human access: roles, not users
+
+`terraform/modules/iam-access` creates four assumable roles and **no IAM users**:
+
+| Role | Grants | Session | MFA |
+| --- | --- | --- | --- |
+| `break-glass` | AdministratorAccess | 1 hour | required, ≤15 min old |
+| `platform-engineer` | PowerUserAccess | 4 hours | required |
+| `developer` | ReadOnlyAccess + cluster view | 4 hours | required |
+| `auditor` | ReadOnlyAccess + SecurityAudit | 4 hours | required |
+
+Roles rather than users because a role issues credentials that expire on their
+own. An IAM user's access key stays valid until somebody remembers to rotate it,
+and during a migration nobody does. Adding IAM users here would also contradict
+every other decision in this document — OIDC instead of CI keys, SSM instead of
+SSH keys, generated database passwords nobody types.
+
+Two details that matter more than the role list:
+
+**MFA age, not just MFA presence.** The trust policies test
+`aws:MultiFactorAuthAge` as well as `aws:MultiFactorAuthPresent`. A token minted
+eight hours ago is not evidence that a human is present now. Break-glass demands
+one under 15 minutes old.
+
+**The standing roles are explicitly denied `secretsmanager:GetSecretValue`.**
+Nobody should read application data by hand. An engineer who genuinely needs it
+has to break glass, which is visible, rather than doing it quietly with
+credentials they already hold.
+
+Break-glass also gets an **EKS access entry**, because an IAM role with
+AdministratorAccess still cannot run `kubectl` against a cluster without one. A
+break-glass role that stops at IAM is not break-glass for the thing most likely
+to be broken. Its assumption raises a CloudWatch alarm to the same SNS topic as
+infrastructure alerts, when a CloudTrail log group is supplied — an emergency
+role nobody is told about is just standing admin access.
+
+Identity Center is the better answer once an organisation exists. This module is
+for the window before that, which on a migration is most of it.
+
 ### Three separate identities, by function
 
 | Identity | Assumed by | Can |
