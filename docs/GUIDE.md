@@ -187,7 +187,9 @@ docker exec migration-target-rds psql -U postgres -d migration_tracker \
 
 ### Path C — Run it against real AWS
 
-[SETUP.md](SETUP.md) is the step-by-step. In outline:
+[AWS-WALKTHROUGH.md](AWS-WALKTHROUGH.md) is the click-by-click version, with
+running costs at each stage and a teardown checklist for what `terraform destroy`
+leaves behind. [SETUP.md](SETUP.md) is the reference. In outline:
 
 1. `terraform/bootstrap` — state bucket, once per account
 2. `terraform/envs/staging` — apply, then production

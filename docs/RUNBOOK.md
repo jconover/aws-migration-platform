@@ -9,6 +9,7 @@ Operational procedures for the migration programme. Written to be followed at
 | Undo a bad release or a failed cutover | [Rollback](#rollback) |
 | Bring the on-premises cluster back after an outage | [Source estate recovery](#source-estate-recovery-on-premises-talos) |
 | Build or rebuild an AWS target with Terraform | [SETUP.md §7](SETUP.md#7-building-each-landing-target) |
+| Stand the whole thing up in a real account | [AWS-WALKTHROUGH.md](AWS-WALKTHROUGH.md) |
 | Move data into a target and verify it | [MIGRATION-DEMO.md](MIGRATION-DEMO.md#against-real-rds) |
 | Diagnose a live incident | [Common incidents](#common-incidents) |
 

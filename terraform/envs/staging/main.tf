@@ -99,6 +99,9 @@ module "platform" {
   github_deploy_subjects = [
     "repo:${var.github_repository}:environment:staging",
   ]
-  # Staging owns the account-level GitHub OIDC provider; production reuses it.
-  create_github_oidc_provider = true
+  # Set to true only if the account has no GitHub OIDC provider yet. Check with:
+  #   aws iam list-open-id-connect-providers
+  # A second provider for token.actions.githubusercontent.com cannot be created,
+  # and apply fails with EntityAlreadyExists.
+  create_github_oidc_provider = false
 }

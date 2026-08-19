@@ -26,6 +26,7 @@ are here. Also published as a shareable page:
 | [docs/MIGRATION-DEMO.md](docs/MIGRATION-DEMO.md) | **Runnable** on-premises Talos to AWS migration, with the verification gate |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | Generated programme backlog: 5 epics, 54 stories and tasks |
 | [docs/SETUP.md](docs/SETUP.md) | Bootstrapping AWS and GitHub from scratch |
+| [docs/AWS-WALKTHROUGH.md](docs/AWS-WALKTHROUGH.md) | Step-by-step apply against a real account, with costs and teardown |
 
 ## Layout
 
