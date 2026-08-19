@@ -1,0 +1,7 @@
+sourceServerId,destinationServerId,destinationPort,connectionCount
+d-server-0001,d-server-0003,5432,48210
+d-server-0002,d-server-0003,5432,47992
+d-server-0001,d-server-0002,8080,120
+d-server-0004,d-server-0005,5432,88301
+d-server-0008,d-server-0001,22,14
+d-server-0009,d-server-0001,443,7

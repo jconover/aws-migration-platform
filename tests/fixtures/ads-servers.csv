@@ -1,0 +1,9 @@
+configurationId,hostName,osName,numCores,totalRamInMB,owner
+d-server-0001,billing-web-01,Red Hat Enterprise Linux 8,4,16384,payments
+d-server-0002,billing-web-02,Red Hat Enterprise Linux 8,4,16384,payments
+d-server-0003,billing-db-01,Red Hat Enterprise Linux 8,8,65536,payments
+d-server-0004,orders-api-01,Ubuntu 20.04,4,8192,commerce
+d-server-0005,orders-db-01,Ubuntu 20.04,8,32768,commerce
+d-server-0006,legacy-fax-01,Windows Server 2012 R2,2,4096,facilities
+d-server-0007,print-spool-01,Windows Server 2012 R2,2,4096,facilities
+d-server-0008,jump-host-01,Ubuntu 20.04,2,4096,platform

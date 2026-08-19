@@ -45,6 +45,34 @@ Retire is the highest-value outcome per hour spent. In most estates 10-20% of
 inventory has no real consumers, and every retired server is one that needs no
 migration, no testing, and no cutover window.
 
+**Turn discovery output into the portfolio.** `migration/discovery.py` consumes
+an ADS export and produces tracker-ready workloads, with waves derived from the
+dependency graph rather than from planning convenience:
+
+```bash
+uv run python -m migration.discovery \
+  --servers servers.csv --connections connections.csv
+```
+
+Waves are connected components of the observed-connection graph. Two rules,
+enforced in code rather than in a document:
+
+1. **A cluster is never split.** Servers that talk to each other cut over
+   together, or accept measured latency across the link. Deciding that
+   per-server during a cutover window is how outages happen.
+2. **Data-tier clusters do not go in wave 1.** A database cutover is the
+   expensive kind to get wrong, and wave 1 exists to surface process problems
+   cheaply.
+
+Servers with no observed traffic in either direction surface as retirement
+candidates. On the sample export that is 2 of 8 - consistent with the 10-20% a
+typical estate carries.
+
+The value shows in cases nobody would assign by hand. In the sample, a jump host
+is pulled into the payments cluster because it holds SSH sessions to a billing
+web server. No planner groups a jump host with payments; the connection data
+does, and migrating the cluster without it would strand operator access.
+
 **Exit criteria:** every workload has an owner, a strategy, a wave, and a
 recorded dependency set. All of it is in the tracker, not a spreadsheet.
 
