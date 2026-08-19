@@ -68,7 +68,7 @@ require_cluster() {
 
 source_pod() {
   kubectl -n "${NAMESPACE}" get pod -l app.kubernetes.io/name=legacy-postgres \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------------
@@ -129,7 +129,8 @@ cmd_status() {
       info "workload rows on-premises:"
       kubectl -n "${NAMESPACE}" exec "${pod}" -- \
         psql -U tracker_admin -d migration_tracker -tAc \
-        "SELECT wave || ': ' || count(*) FROM workloads GROUP BY wave ORDER BY wave" 2>/dev/null | sed 's/^/      wave /'
+        "SELECT wave || ': ' || count(*) FROM workloads GROUP BY wave ORDER BY wave" 2>/dev/null \
+        | sed 's/^/      wave /' || info "database not answering - see: $0 doctor"
     fi
   else
     info "namespace ${NAMESPACE} does not exist - run: $0 up"
@@ -268,10 +269,22 @@ cmd_doctor() {
       pod="$(source_pod)"
       if [ -n "${pod}" ]; then
         local rows
+        local phase
+        phase="$(kubectl -n "${NAMESPACE}" get pod "${pod}" \
+          -o jsonpath='{.status.phase}' 2>/dev/null || true)"
         rows="$(kubectl -n "${NAMESPACE}" exec "${pod}" -- \
           psql -U tracker_admin -d migration_tracker -tAc \
-          'SELECT count(*) FROM workloads' 2>/dev/null | tr -d ' \r')"
-        info "[ ok ] source deployed: pod ${pod}, ${rows:-?} workload rows"
+          'SELECT count(*) FROM workloads' 2>/dev/null | tr -d ' \r' || true)"
+
+        if [ -n "${rows}" ]; then
+          info "[ ok ] source deployed: pod ${pod} (${phase}), ${rows} workload rows"
+        else
+          info "[warn] pod ${pod} is ${phase:-not ready} and not answering queries"
+          info "       after an unclean shutdown a pod can be stranded in Unknown."
+          info "       the PVC is unaffected; delete the pod and let the"
+          info "       StatefulSet recreate it:"
+          info "         kubectl -n ${NAMESPACE} delete pod ${pod}"
+        fi
       else
         info "[warn] namespace ${NAMESPACE} exists but no database pod - run: $0 up"
       fi
