@@ -484,7 +484,7 @@ aws ec2 describe-addresses --query 'Addresses[?AssociationId==null].PublicIp' --
 aws ec2 describe-nat-gateways --filter Name=state,Values=available,pending \
   --query 'NatGateways[].NatGatewayId' --output text
 
-# KMS keys: 4 of them, $1/month each until the deletion window expires
+# KMS keys: 2 of them, $1/month each until the deletion window expires
 aws kms list-keys --query 'Keys[].KeyId' --output text | tr '\t' '\n' | while read -r k; do
   aws kms describe-key --key-id "$k" \
     --query 'KeyMetadata.{id:KeyId,state:KeyState,deletes:DeletionDate}' --output text
@@ -496,8 +496,12 @@ aws logs describe-log-groups --log-group-name-prefix /aws/ \
 ```
 
 KMS keys enter a **pending deletion window of 30 days** and bill at $1/month each
-until it expires. Four keys is $4/month for a month after teardown unless you
-shorten the window. That is the most commonly missed leftover.
+until it expires. An environment creates two customer-managed keys - EKS envelope
+encryption and RDS encryption at rest - so that is $2/month for a month after
+teardown unless you shorten the window. The artifact bucket and ECR repository
+use `AES256`, and SNS uses the AWS-managed `alias/aws/sns`, so none of those add
+a key. The bootstrap state key is a third, and it survives on purpose. Pending
+deletion is the most commonly missed leftover.
 
 The state bucket from Step 1 survives on purpose. Remove it only when you are
 finished with the account entirely, and note `prevent_destroy` must be removed
