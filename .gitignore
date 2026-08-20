@@ -43,3 +43,13 @@ terraform_outputs.md
 
 # Local session notes
 HANDOFF.local.md
+
+# Editor and OS cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.orig
+*.rej
