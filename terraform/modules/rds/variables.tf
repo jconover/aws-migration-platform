@@ -30,9 +30,17 @@ variable "allowed_security_groups" {
 }
 
 variable "engine_version" {
-  description = "Postgres major.minor version."
+  description = <<-EOT
+    Postgres version. Major-only ("17") is preferred: RDS resolves it to the
+    latest supported minor, and the provider suppresses the resulting diff, so a
+    pinned minor cannot silently become unavailable. Pin a full minor only when
+    a specific one is required.
+
+    List what actually exists before pinning:
+      aws rds describe-db-engine-versions --engine postgres         --query 'DBEngineVersions[].EngineVersion' --output text
+  EOT
   type        = string
-  default     = "17.4"
+  default     = "17"
 }
 
 variable "instance_class" {

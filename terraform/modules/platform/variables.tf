@@ -80,9 +80,9 @@ variable "cluster_viewer_role_arns" {
 }
 
 variable "db_engine_version" {
-  description = "Postgres version."
+  description = "Postgres version. Major-only lets RDS pick the latest supported minor."
   type        = string
-  default     = "17.4"
+  default     = "17"
 }
 
 variable "db_instance_class" {
