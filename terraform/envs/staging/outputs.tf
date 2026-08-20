@@ -67,3 +67,8 @@ output "ec2_load_balancer_dns_name" {
   value       = module.platform.ec2_load_balancer_dns_name
   description = "Rehost target load balancer DNS name."
 }
+
+output "alb_controller_role_arn" {
+  description = "Annotate this onto the aws-load-balancer-controller service account in kube-system."
+  value       = module.platform.alb_controller_role_arn
+}

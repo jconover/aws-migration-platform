@@ -318,19 +318,49 @@ up — usually the image pull or the Secrets Manager fetch.
 
 ## Step 7 — Cluster prerequisites
 
-Nothing serves traffic until these exist. Both need their own IRSA roles; use
-`terraform/modules/irsa` pointed at `kube-system`.
+Nothing serves traffic until these exist. They get their AWS identity in two
+different ways, and the difference matters.
+
+**The load balancer controller needs its own IRSA role.** It calls Elastic Load
+Balancing and EC2 on its own behalf, so the permissions sit on its own service
+account in `kube-system`. Terraform builds that role from upstream's published
+policy, vendored at a pinned version under
+`terraform/modules/platform/policies/`. Annotate the service account with the
+ARN, and set the name explicitly - the trust policy pins that exact name, and
+the chart would otherwise generate one from the release name:
 
 ```bash
 helm repo add eks https://aws.github.io/eks-charts
 helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system --set clusterName="$(terraform output -raw cluster_name)"
+  -n kube-system \
+  --set clusterName="$(terraform output -raw cluster_name)" \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$(terraform output -raw alb_controller_role_arn)"
+```
 
+**The Secrets Store CSI driver needs no role of its own.** Its AWS provider
+does not read secrets as itself - it exchanges the service account token of the
+pod that mounts them, so the grants belong on the *workload's* service account.
+`app_role_arn` already carries exactly those: `GetSecretValue` and
+`DescribeSecret` on the database secret, and `kms:Decrypt` conditioned on
+`kms:ViaService` being Secrets Manager. `deploy/k8s/base/serviceaccount.yaml`
+annotates it at deploy time. A role for the daemonset would look tidy and grant
+nothing that is ever used.
+
+```bash
 helm repo add secrets-store-csi-driver \
   https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
 helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
   -n kube-system --set syncSecret.enabled=true
 kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
+```
+
+Confirm the controller actually assumed its role rather than falling back to the
+node role - a controller with no identity fails at the first ingress, not at
+install:
+
+```bash
+kubectl -n kube-system logs deploy/aws-load-balancer-controller | grep -i "assumed\|AccessDenied" | head
 ```
 
 ---

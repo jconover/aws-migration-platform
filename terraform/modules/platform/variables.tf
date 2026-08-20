@@ -218,3 +218,24 @@ variable "cloudtrail_log_group_name" {
   type        = string
   default     = ""
 }
+
+variable "alb_controller_version" {
+  description = <<-EOT
+    AWS Load Balancer Controller release whose IAM policy is vendored under
+    policies/. Changing this requires adding the matching policy file, which is
+    the point: the permissions and the controller version move together.
+  EOT
+  type        = string
+  default     = "3.5.0"
+}
+
+variable "alb_controller_service_account" {
+  description = <<-EOT
+    Service account the controller runs as, in kube-system. The IRSA trust
+    policy pins this exact name, so set the same value with
+    --set serviceAccount.name on helm install rather than letting the chart
+    generate one from the release name.
+  EOT
+  type        = string
+  default     = "aws-load-balancer-controller"
+}

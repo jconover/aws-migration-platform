@@ -112,3 +112,8 @@ output "break_glass_alarm_enabled" {
   description = "False means CloudTrail was not wired up, so break-glass use is not alarmed."
   value       = var.enable_human_access_roles ? module.human_access[0].alarm_enabled : null
 }
+
+output "alb_controller_role_arn" {
+  description = "IRSA role ARN to annotate on the AWS Load Balancer Controller service account in kube-system."
+  value       = module.alb_controller_irsa.role_arn
+}
