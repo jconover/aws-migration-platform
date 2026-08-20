@@ -40,3 +40,6 @@ keys/
 
 # my terraform outputs file to save
 terraform_outputs.md
+
+# Local session notes
+HANDOFF.local.md
