@@ -66,8 +66,12 @@ terraform init
 terraform apply -var="state_bucket_name=tf-state-<account-id>-migration"
 ```
 
-Bucket names are globally unique; change the suffix if it is taken. Note the
-outputs — you need the bucket name and the KMS key ARN in Step 3.
+Bucket names are globally unique; change the suffix if it is taken.
+
+The `init_commands` output prints the exact `terraform init` line for each
+environment with the bucket and KMS ARN already filled in — copy it and skip
+ahead to Step 3. Nothing in it needs editing: the environment stacks already
+declare their own backend blocks with the state key set.
 
 **Cost:** pennies. **Time:** under a minute.
 

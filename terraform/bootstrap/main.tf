@@ -119,18 +119,35 @@ resource "aws_s3_bucket_policy" "state" {
   depends_on = [aws_s3_bucket_public_access_block.state]
 }
 
-output "backend_configuration" {
-  description = "Paste into each environment's backend block."
+output "state_bucket_name" {
+  description = "State bucket name, for -backend-config."
+  value       = aws_s3_bucket.state.id
+}
+
+output "state_kms_key_arn" {
+  description = "KMS key encrypting state, for -backend-config."
+  value       = aws_kms_key.state.arn
+}
+
+# The environment stacks already declare their own backend blocks with the key
+# set (staging/terraform.tfstate, prod/terraform.tfstate). Only bucket, region
+# and kms_key_id are supplied at init time, so the same code can initialise
+# against a different account per environment. These are those commands, ready
+# to paste - nothing here needs editing.
+output "init_commands" {
+  description = "Ready-to-run terraform init for each environment."
   value       = <<-EOT
-    terraform {
-      backend "s3" {
-        bucket       = "${aws_s3_bucket.state.id}"
-        key          = "<environment>/terraform.tfstate"
-        region       = "${var.region}"
-        encrypt      = true
-        kms_key_id   = "${aws_kms_key.state.arn}"
-        use_lockfile = true
-      }
-    }
+
+    staging:
+      terraform -chdir=../envs/staging init \
+        -backend-config="bucket=${aws_s3_bucket.state.id}" \
+        -backend-config="region=${var.region}" \
+        -backend-config="kms_key_id=${aws_kms_key.state.arn}"
+
+    prod:
+      terraform -chdir=../envs/prod init \
+        -backend-config="bucket=${aws_s3_bucket.state.id}" \
+        -backend-config="region=${var.region}" \
+        -backend-config="kms_key_id=${aws_kms_key.state.arn}"
   EOT
 }
