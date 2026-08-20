@@ -337,13 +337,30 @@ kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-
 
 ## Step 8 — Build and push the image
 
+Run from the repository root, not from the Terraform directory — the build
+context is the repo:
+
 ```bash
-REGISTRY=$(terraform output -raw ecr_repository_url)
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin "${REGISTRY%%/*}"
+cd <repo-root>
+
+REGISTRY=$(terraform -chdir=terraform/envs/staging output -raw ecr_repository_url)
+REGISTRY_HOST=$(echo "$REGISTRY" | cut -d/ -f1)
+TAG=$(git rev-parse --short HEAD)
+
+echo "$REGISTRY"        # verify both are set before continuing
+echo "$REGISTRY_HOST"
+
+aws ecr get-login-password --region us-east-1 \
+  | docker login --username AWS --password-stdin "$REGISTRY_HOST"
 
 # The nodes are amd64; a Mac builds arm64 by default. This matters.
-docker buildx build --platform linux/amd64 -t "$REGISTRY:sha-$(git rev-parse HEAD)" --push ../../..
+docker buildx build --platform linux/amd64 -t "$REGISTRY:$TAG" --push .
 ```
+
+`cut` rather than `${REGISTRY%%/*}` so the line survives being pasted between
+shells, and the two `echo` lines catch the common failure: if the `terraform
+output` call ran from the wrong directory, `REGISTRY` is empty and every command
+after it fails in a confusing way.
 
 The `--platform linux/amd64` flag is not optional on Apple Silicon. Without it
 pods crash-loop with `exec format error`, which reads like an application bug and
