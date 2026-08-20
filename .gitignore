@@ -36,3 +36,7 @@ deploy/k8s/rendered.yaml
 .DS_Store
 
 keys/
+
+
+# my terraform outputs file to save
+terraform_outputs.md
