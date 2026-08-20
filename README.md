@@ -187,6 +187,50 @@ rollouts run `kubectl rollout undo` automatically.
   excludes the instance metadata endpoint.
 - **Images deployed by digest** from an `IMMUTABLE` ECR repository.
 
+## Next steps
+
+Ordered by what would teach the most, not by what is easiest.
+
+**Prove the human access model.** `terraform/modules/iam-access` builds
+assumable roles by tier plus a break-glass role with an MFA-age condition and a
+CloudTrail alarm on its use. It is written and tested but has never been
+applied, so the MFA-age condition and the break-glass EKS access entry are
+unproven. IAM roles cost nothing to apply; the reason to do it is that a
+security control nobody has exercised is a claim, not a control.
+
+**Run the second source estate end to end.** `SOURCE=vm` builds an Ubuntu VM
+with Postgres installed by `apt` - the lift-and-shift case, with no orchestrator
+to ask for a dump. The code is in and the Talos path is unchanged, but the VM
+cutover has not been driven through the verification gate yet. The test that
+matters is the negative one: corrupt a row and confirm the gate refuses to pass.
+
+**Apply the cluster prerequisites.** The AWS Load Balancer Controller's IRSA
+role exists in Terraform and plans cleanly, but no ingress has been served
+through it. Until a Service of type LoadBalancer actually provisions an ALB, the
+IAM policy is theory.
+
+**Replace `create_all` with Alembic.** Fine for a demo, wrong for anything that
+has to migrate a schema forward without dropping data. This is the single
+largest gap between this repository and something that could carry production.
+
+**Give the rehost target a placeholder that satisfies its own contract.** The
+current default cannot pass the health check, which is documented in
+[docs/ASG-CHURN.md](docs/ASG-CHURN.md) but still a trap. An image serving
+`/healthz` on 8000, running read-only with no capabilities, removes it.
+
+**Terminate TLS properly.** The ALB has no certificate configured. ACM plus a
+hosted zone is a small change and closes the gap between "listens on 443" and
+"serves TLS".
+
+**Move discovery to AWS Transform.** Application Discovery Service closed to new
+customers in November 2025. The wave-planning logic is schema-agnostic; only the
+mapping layer and the export query would change. Doing it would prove the
+abstraction holds.
+
+**Right-size against real demand.** Everything here is sized by guess. Two weeks
+of CloudWatch data, then Savings Plans, is the post-migration work the backlog
+already describes and nothing here has earned yet.
+
 ## Known gaps
 
 Listed honestly in
