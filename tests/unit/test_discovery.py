@@ -85,7 +85,7 @@ def test_a_cluster_is_never_split_across_waves(servers, connections):
 
 def test_a_cluster_larger_than_the_cap_still_stays_together():
     servers = [Server(f"s{i}", f"host-{i}") for i in range(10)]
-    connections = [Connection(f"s{i}", f"s{i+1}") for i in range(9)]
+    connections = [Connection(f"s{i}", f"s{i + 1}") for i in range(9)]
     clusters = dependency_clusters(servers, connections)
     waves = assign_waves(clusters, max_per_wave=3)
     assert len(set(waves.values())) == 1
@@ -95,12 +95,8 @@ def test_data_tier_clusters_are_held_back(servers, connections):
     """Wave 1 carries the least risk; a database cutover is the expensive kind."""
     clusters = dependency_clusters(servers, connections)
     waves = assign_waves(clusters)
-    data_waves = [
-        waves[s.server_id] for c in clusters if c.has_data_tier for s in c.servers
-    ]
-    plain_waves = [
-        waves[s.server_id] for c in clusters if not c.has_data_tier for s in c.servers
-    ]
+    data_waves = [waves[s.server_id] for c in clusters if c.has_data_tier for s in c.servers]
+    plain_waves = [waves[s.server_id] for c in clusters if not c.has_data_tier for s in c.servers]
     assert min(data_waves) > min(plain_waves)
 
 
@@ -206,9 +202,7 @@ def test_agent_id_is_not_treated_as_a_connection_source():
     assert parse_connections(rows) == []
 
 
-def test_athena_export_produces_the_same_shape_of_portfolio(
-    athena_servers, athena_connections
-):
+def test_athena_export_produces_the_same_shape_of_portfolio(athena_servers, athena_connections):
     portfolio = build_portfolio(athena_servers, athena_connections)
     assert len(portfolio) == len(athena_servers)
     by_name = {e.name: e for e in portfolio}
