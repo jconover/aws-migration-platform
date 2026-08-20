@@ -23,6 +23,53 @@ up, so the flow runs end to end without credentials.
                                             cut over      roll back
 ```
 
+## Two source estates
+
+A real migration programme does not have one kind of source. It has orchestrated
+workloads on a cluster *and* databases installed on machines that have been
+running for years, and the second kind is usually the harder one. Both are
+runnable here, selected with `SOURCE`:
+
+| `SOURCE` | What it is | Which AWS target it argues for |
+| --- | --- | --- |
+| `talos` (default) | Postgres as a StatefulSet on bare-metal Talos, Longhorn PVC | EKS - it is already containerised |
+| `vm` | Ubuntu 24.04 VM, Postgres installed with `apt` | EC2 rehost, or RDS after a replatform |
+
+The VM source is the lift-and-shift case: a package-managed database on a
+long-lived machine, listening on the host network, with no orchestrator to ask
+for a dump. It is built by `migration/scripts/onprem-vm.sh`, which uses
+[multipass](https://multipass.run) to run a genuine Ubuntu VM rather than a
+container pretending to be one.
+
+```bash
+# Build the VM source: create it, install Postgres, seed the portfolio
+migration/scripts/onprem-vm.sh up
+
+# Migrate from it - identical commands, different estate
+SOURCE=vm migration/scripts/migrate.sh cutover
+
+# Tear it down
+migration/scripts/onprem-vm.sh down
+```
+
+Both estates are seeded from the **same file**, `deploy/onprem/seed.sql` - the
+Talos path mounts it as a ConfigMap, the VM applies it directly. That is
+deliberate: if the two sources could drift, a passing verification gate would
+prove nothing about whether the migration or the seed differed.
+
+The dump flags are identical on both paths too (`--no-owner --no-privileges
+--column-inserts`), so the two sources produce interchangeable dumps and the
+verification gate is comparing the migration, not the export.
+
+**What differs, and why it matters:** on Talos the verifier reaches the source
+through a `kubectl port-forward`, because a pod has no address of its own. The
+VM answers on its own IP, exactly as an on-premises host would. That difference
+is the whole reason for having both - the Kubernetes path is convenient in a way
+real estates are not.
+
+**Requires:** multipass, and its daemon running. `onprem-vm.sh doctor` checks
+both and tells you how to start the daemon if it is not answering.
+
 ## Run it
 
 ```bash

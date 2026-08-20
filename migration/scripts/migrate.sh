@@ -16,17 +16,25 @@
 #   ./migrate.sh down      remove the on-premises source
 #   ./migrate.sh doctor    check tooling, cluster reachability and demo state
 #
+# Source selection:
+#   SOURCE=talos (default) -> the on-premises source is the Talos cluster
+#   SOURCE=vm              -> the source is an Ubuntu VM built by onprem-vm.sh,
+#                             which is the lift-and-shift case: a database
+#                             installed on a long-lived machine, not a pod
+#
 # Target selection:
 #   TARGET_DSN unset  -> a local Postgres container stands in for RDS, so the
 #                        whole flow is runnable without an AWS account
 #   TARGET_DSN set    -> that database is used, e.g. the real RDS endpoint
 set -euo pipefail
 
+readonly SOURCE="${SOURCE:-talos}"
 readonly NAMESPACE="${NAMESPACE:-legacy-onprem}"
 readonly KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/nexus}"
 MANIFESTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../deploy/onprem" && pwd)"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-readonly MANIFESTS REPO_ROOT
+VM_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/onprem-vm.sh"
+readonly MANIFESTS REPO_ROOT VM_SCRIPT
 readonly WORKDIR="${WORKDIR:-/tmp/migration-demo}"
 readonly DUMP_FILE="${WORKDIR}/onprem-workloads.sql"
 
@@ -72,6 +80,73 @@ source_pod() {
 }
 
 # --------------------------------------------------------------------------
+# Source: the estate being migrated. Two shapes, because a real programme has
+# both - orchestrated workloads on a cluster, and databases installed on
+# machines that have been running for years.
+#
+# Each source answers the same three questions: are you reachable, give me a
+# dump, and give me a connection string I can verify against. Everything below
+# this line is the same for both.
+# --------------------------------------------------------------------------
+is_vm_source() { [ "${SOURCE}" = "vm" ]; }
+
+source_require() {
+  case "${SOURCE}" in
+    talos) require_cluster ;;
+    vm)
+      require multipass
+      "${VM_SCRIPT}" dsn >/dev/null 2>&1 \
+        || die "VM source not ready - run: SOURCE=vm $0 up"
+      ;;
+    *) die "unknown SOURCE '${SOURCE}' (expected: talos, vm)" ;;
+  esac
+}
+
+# Writes a --column-inserts dump to stdout. Identical flags on both paths, so
+# the two sources produce interchangeable dumps.
+source_dump() {
+  if is_vm_source; then
+    multipass exec "${VM_NAME:-onprem-db-01}" -- sudo -u postgres \
+      pg_dump -d migration_tracker --no-owner --no-privileges --column-inserts
+  else
+    local pod; pod="$(source_pod)"
+    [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
+    kubectl -n "${NAMESPACE}" exec "${pod}" -- \
+      pg_dump -U tracker_admin -d migration_tracker \
+        --no-owner --no-privileges --column-inserts
+  fi
+}
+
+# Echoes a DSN the verifier can connect to. The Talos path needs a port-forward
+# first and sets SOURCE_PF_PID so the caller can tear it down; the VM answers
+# on its own address and needs nothing.
+source_connect() {
+  if is_vm_source; then
+    "${VM_SCRIPT}" dsn
+    return
+  fi
+
+  local pod; pod="$(source_pod)"
+  [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
+  kubectl -n "${NAMESPACE}" port-forward "pod/${pod}" 55501:5432 >/dev/null 2>&1 &
+  SOURCE_PF_PID=$!
+  for _ in $(seq 1 30); do
+    (echo > /dev/tcp/127.0.0.1/55501) >/dev/null 2>&1 && break
+    sleep 1
+  done
+  local pgpass
+  pgpass="$(kubectl -n "${NAMESPACE}" get secret legacy-postgres \
+    -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d)"
+  [ -n "${pgpass}" ] || die "cannot read the on-premises database credential"
+  echo "postgresql://tracker_admin:${pgpass}@localhost:55501/migration_tracker"
+}
+
+source_disconnect() {
+  [ -n "${SOURCE_PF_PID:-}" ] && kill "${SOURCE_PF_PID}" 2>/dev/null || true
+  SOURCE_PF_PID=""
+}
+
+# --------------------------------------------------------------------------
 # Target: either a real DSN, or a local container standing in for RDS.
 # --------------------------------------------------------------------------
 ensure_target() {
@@ -100,6 +175,9 @@ ensure_target() {
 
 # --------------------------------------------------------------------------
 cmd_up() {
+  if is_vm_source; then
+    exec "${VM_SCRIPT}" up
+  fi
   require_cluster
   log "Deploying the on-premises source onto Talos"
   kubectl apply -f "${MANIFESTS}/namespace.yaml"
@@ -121,6 +199,11 @@ cmd_up() {
   kubectl -n "${NAMESPACE}" rollout status statefulset/legacy-postgres --timeout=5m
 
   info "seeding the discovery portfolio"
+  # The seed SQL is one file shared with the VM source, published here as a
+  # ConfigMap so both estates are built from identical data.
+  kubectl -n "${NAMESPACE}" create configmap legacy-seed-sql \
+    --from-file=seed.sql="${MANIFESTS}/seed.sql" \
+    --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "${NAMESPACE}" delete job legacy-seed --ignore-not-found >/dev/null
   kubectl apply -f "${MANIFESTS}/seed-job.yaml"
   kubectl -n "${NAMESPACE}" wait --for=condition=complete job/legacy-seed --timeout=5m
@@ -154,6 +237,18 @@ cmd_up() {
 }
 
 cmd_status() {
+  if is_vm_source; then
+    "${VM_SCRIPT}" status
+    log "Target"
+    if [ -n "${TARGET_DSN:-}" ]; then
+      info "using caller-supplied TARGET_DSN"
+    elif docker ps --format '{{.Names}}' | grep -qx "${STANDIN_CONTAINER}"; then
+      info "local stand-in running on port ${STANDIN_PORT}"
+    else
+      info "no target yet - created on first restore"
+    fi
+    return
+  fi
   require kubectl
   log "On-premises (Talos, namespace ${NAMESPACE})"
   if ! cluster_reachable; then
@@ -183,18 +278,14 @@ cmd_status() {
 }
 
 cmd_snapshot() {
-  require_cluster
-  local pod; pod="$(source_pod)"
-  [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
+  source_require
 
   mkdir -p "${WORKDIR}"
-  log "Snapshotting the on-premises database"
+  log "Snapshotting the on-premises database (source: ${SOURCE})"
 
   # --data-only plus explicit column ordering keeps the dump portable across a
   # schema created by SQLAlchemy on one side and by DDL on the other.
-  kubectl -n "${NAMESPACE}" exec "${pod}" -- \
-    pg_dump -U tracker_admin -d migration_tracker \
-      --no-owner --no-privileges --column-inserts > "${DUMP_FILE}"
+  source_dump > "${DUMP_FILE}"
 
   local rows; rows="$(grep -c '^INSERT INTO' "${DUMP_FILE}" || true)"
   info "dump written: ${DUMP_FILE}"
@@ -229,28 +320,17 @@ cmd_restore() {
 }
 
 cmd_verify() {
-  require_cluster
+  source_require
   local dsn; dsn="$(ensure_target)"
-  local pod; pod="$(source_pod)"
-  [ -n "${pod}" ] || die "on-premises database not found - run: $0 up"
 
-  log "Verification gate: comparing source and target"
+  log "Verification gate: comparing source and target (source: ${SOURCE})"
 
-  # Port-forward so the verifier can reach the on-premises database directly,
-  # rather than trusting a value echoed back through kubectl exec.
-  kubectl -n "${NAMESPACE}" port-forward "pod/${pod}" 55501:5432 >/dev/null 2>&1 &
-  local pf_pid=$!
-  trap 'kill '"${pf_pid}"' 2>/dev/null || true' RETURN
-  for _ in $(seq 1 30); do
-    (echo > /dev/tcp/127.0.0.1/55501) >/dev/null 2>&1 && break
-    sleep 1
-  done
+  # Connect to the source database directly rather than trusting a value echoed
+  # back through an exec. On Talos that means a port-forward, which
+  # source_disconnect tears down however this function exits.
+  local source_dsn; source_dsn="$(source_connect)"
+  trap 'source_disconnect' RETURN
 
-  local pgpass
-  pgpass="$(kubectl -n "${NAMESPACE}" get secret legacy-postgres \
-    -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d)"
-  [ -n "${pgpass}" ] || die "cannot read the on-premises database credential"
-  local source_dsn="postgresql://tracker_admin:${pgpass}@localhost:55501/migration_tracker"
   ( cd "${REPO_ROOT}" && uv run python -m migration.verify \
       --source "${source_dsn}" --target "${dsn}" --tables workloads )
 }
@@ -279,6 +359,17 @@ cmd_rollback() {
 }
 
 cmd_doctor() {
+  if is_vm_source; then
+    "${VM_SCRIPT}" doctor
+    if [ -n "${TARGET_DSN:-}" ]; then
+      info "[ ok ] target: TARGET_DSN is set (real database)"
+    elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${STANDIN_CONTAINER}"; then
+      info "[ ok ] target: local stand-in running on port ${STANDIN_PORT}"
+    else
+      info "[info] target: none yet - created on first restore"
+    fi
+    return
+  fi
   log "Preflight"
 
   for tool in kubectl docker uv; do
@@ -363,6 +454,12 @@ cmd_doctor() {
 }
 
 cmd_down() {
+  if is_vm_source; then
+    "${VM_SCRIPT}" down
+    docker rm -f "${STANDIN_CONTAINER}" >/dev/null 2>&1 || true
+    rm -rf "${WORKDIR}"
+    return
+  fi
   require_cluster
   log "Removing the on-premises source"
   kubectl delete namespace "${NAMESPACE}" --ignore-not-found --wait=false
