@@ -42,6 +42,11 @@ jobs:
   # -------------------------------------------------------------------------
   publish:
     name: Build and publish image
+    # Skip rather than fail when no deploy role is configured. A workflow that
+    # cannot possibly succeed should not run at all: a red X on every commit
+    # trains people to ignore red, which is worse than no signal.
+    # Configure per docs/SETUP.md section 3 to enable.
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: staging
@@ -237,7 +242,7 @@ jobs:
   notify:
     name: Notify deployment outcome
     needs: [publish, deploy-staging-eks, smoke-staging, deploy-production-eks]
-    if: always() && github.event_name == 'push'
+    if: always() && github.event_name == 'push' && vars.AWS_DEPLOY_ROLE_ARN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
