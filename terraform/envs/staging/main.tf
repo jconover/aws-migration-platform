@@ -56,6 +56,18 @@ variable "cluster_admin_role_arns" {
   default     = []
 }
 
+variable "ec2_container_image" {
+  description = <<-EOT
+    Image the rehosted instances run. The default is a placeholder that lets the
+    stack apply before Step 8 has built anything - but it serves nothing on port
+    8000 and has no /healthz, so the ALB never marks an instance healthy and the
+    ASG replaces it on a loop. Set this to a real image tag for a working rehost
+    target. See docs/ASG-CHURN.md.
+  EOT
+  type        = string
+  default     = "public.ecr.aws/docker/library/nginx:alpine"
+}
+
 variable "eks_endpoint_public_access" {
   description = <<-EOT
     Expose the Kubernetes API publicly. The cluster is private by default, which
@@ -121,6 +133,7 @@ module "platform" {
   enable_ec2_rehost    = true
   ec2_instance_type    = "t3.small"
   ec2_desired_capacity = 1
+  ec2_container_image  = var.ec2_container_image
 
   github_repository = var.github_repository
   github_deploy_subjects = [

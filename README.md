@@ -22,6 +22,7 @@ are here. Also published as a shareable page:
 | [docs/MIGRATION-PLAN.md](docs/MIGRATION-PLAN.md) | Discovery, landing zone, wave execution, post-migration |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, security model, EKS vs ECS |
 | [docs/CICD-OPTIMIZATION.md](docs/CICD-OPTIMIZATION.md) | Pipeline bottlenecks and the measured rewrite |
+| [docs/ASG-CHURN.md](docs/ASG-CHURN.md) | Why the rehost ASG replaced itself on a loop, and the variable Terraform silently discarded |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Cutover, rollback, incident response |
 | [docs/MIGRATION-DEMO.md](docs/MIGRATION-DEMO.md) | **Runnable** on-premises Talos to AWS migration, with the verification gate |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | Generated programme backlog: 5 epics, 54 stories and tasks |
