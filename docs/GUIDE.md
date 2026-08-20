@@ -200,8 +200,8 @@ leaves behind. [SETUP.md](SETUP.md) is the reference. In outline:
 5. Push to `main`
 
 Start in a sandbox account. Every stack passes `validate`, but validation cannot
-catch service quotas, IAM boundaries, or region-specific behaviour, and nothing
-here has been applied against a live account.
+catch service quotas, IAM boundaries, or region-specific behaviour. Staging has
+since been applied for real and torn down; production has not.
 
 **One thing that will surprise you:** RDS is private by design — no public
 access, and its subnets have no default route. Running the migration against it
@@ -252,9 +252,11 @@ backlog and reality cannot drift apart.
 
 ## What this repository does not claim
 
-- **Nothing has been applied to a live AWS account.** All 14 stacks pass
-  `validate` and `fmt`; that does not catch quotas, IAM boundaries or regional
-  behaviour.
+- **Staging has been applied to a live AWS account and the migration run end
+  to end into real RDS** (2026-08-20); production has not. Applying surfaced
+  three faults `validate` and `plan` both missed: `for_each` over
+  apply-time-unknown values, an RDS engine version that was never published,
+  and an ASG health check stricter than its placeholder image could satisfy.
 - **The pipeline rewrite is slower in wall-clock than the naive baseline**
   (1m 57s vs 1m 03s) at this repository's size. It was adopted for scope and
   feedback quality; the original speed claim was measured and disproven, and

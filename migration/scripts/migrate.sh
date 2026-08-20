@@ -353,8 +353,8 @@ cmd_doctor() {
 
   if [ -n "${TARGET_DSN:-}" ]; then
     info "[ ok ] target: TARGET_DSN is set (real database)"
-    info "       note: RDS is private by design. From outside the VPC this will"
-    info "       not connect - see docs/MIGRATION-DEMO.md, 'Against real RDS'."
+    info "       RDS is private, so this needs a path into the VPC - an SSM"
+    info "       port-forward or a job inside the VPC. See docs/MIGRATION-DEMO.md."
   elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${STANDIN_CONTAINER}"; then
     info "[ ok ] target: local stand-in running on port ${STANDIN_PORT}"
   else

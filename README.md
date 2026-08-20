@@ -140,6 +140,8 @@ Everything below was executed against this repository, not assumed.
 | Container | builds, runs healthy, serves traffic as UID 10001 |
 | CI on GitHub Actions | **all 21 jobs green** in 1 min 57 s |
 | CD on GitHub Actions | job graph builds; fails only at AWS auth, which is unconfigured |
+| **Applied to live AWS** | staging stack applied in us-east-1, then destroyed |
+| **Migration on real RDS** | 20 rows moved from bare-metal Talos; gate caught a silent field edit and a deleted row |
 
 ## Pipeline
 

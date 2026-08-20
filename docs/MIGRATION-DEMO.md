@@ -177,6 +177,61 @@ OK   workloads: identical
 MATCH - safe to proceed
 ```
 
+## Run on real AWS, 2026-08-20
+
+The above runs against a local stand-in. This is the same flow against a real
+RDS instance in `us-east-1`, reached over an SSM port-forward because the data
+tier has no route to the internet.
+
+```
+==> Preflight
+    [ ok ] cluster reachable at https://<talos-endpoint>:6443
+           3 node(s) ready
+    [ ok ] source deployed: pod legacy-postgres-0 (Running), 20 workload rows
+    [ ok ] target: TARGET_DSN is set (real database)
+
+==> CUTOVER: snapshot -> restore -> verify
+    dump written: /tmp/migration-demo/onprem-workloads.sql
+    insert statements captured: 20
+    resetting target schema
+    restore complete
+==> Verification gate: comparing source and target
+OK   workloads: identical
+MATCH - safe to proceed
+```
+
+Both failure modes were then induced against that live RDS instance:
+
+```
+$ psql "$TARGET_DSN" -c "UPDATE workloads SET owner='wrong-team' WHERE name='billing-api';"
+UPDATE 1
+$ ./migration/scripts/migrate.sh verify
+FAIL workloads: checksum differs (source 312314688445, target 378452616734)
+MISMATCH - roll back
+
+$ psql "$TARGET_DSN" -c "DELETE FROM workloads WHERE name='dr-replica';"
+DELETE 1
+$ ./migration/scripts/migrate.sh verify
+FAIL workloads: row count 20 -> 19 (-1)
+MISMATCH - roll back
+```
+
+The first case is the one that matters: **the row count never changed.** One
+field differed, and only the checksum caught it. Re-running `cutover` restored
+the target and the gate returned to `MATCH`.
+
+The portfolio, having crossed from bare metal into RDS:
+
+```
+ wave | count | migrated
+------+-------+----------
+    1 |     5 |        3
+    2 |     5 |        0
+    3 |     4 |        0
+    4 |     4 |        0
+    5 |     2 |        0
+```
+
 ## The verification gate
 
 Step 4 of the cutover in [RUNBOOK.md](RUNBOOK.md) is the last point at which

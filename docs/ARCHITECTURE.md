@@ -293,9 +293,9 @@ Honest about what is not here:
   HTTPS and the TLS 1.3 policy are already on the Ingress.
 - **The ECS module's ALB ingress uses a `10.0.0.0/8` CIDR rule.** It should
   reference a corporate prefix list once the network team publishes one.
-- **No `terraform plan` against a live account.** Every stack passes
-  `validate` and `fmt`; validation cannot catch quota limits, IAM boundaries, or
-  region-specific behaviour. First `apply` should be into a sandbox account.
+- **Staging has been applied against a live account and torn down**; prod has
+  not. Applying found three faults that `validate` and `plan` both missed, so
+  treat a clean `validate` as necessary and nowhere near sufficient.
 - **Prod reuses the staging account's GitHub OIDC provider**
   (`create_github_oidc_provider = false`). Correct for a shared account; if the
   environments are split across accounts, set it to `true` in prod.
