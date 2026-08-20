@@ -21,10 +21,22 @@ module "human_access" {
 }
 
 locals {
+  # Keyed by access tier, not by role ARN. The ARNs are created in this same
+  # apply, so using them as map keys would make the for_each keys unknown at
+  # plan time and the plan would fail before reaching AWS.
   human_cluster_access = var.enable_human_access_roles ? {
-    (module.human_access[0].break_glass_role_arn)       = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-    (module.human_access[0].platform_engineer_role_arn) = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy"
-    (module.human_access[0].developer_role_arn)         = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+    break_glass = {
+      principal_arn = module.human_access[0].break_glass_role_arn
+      policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    }
+    platform_engineer = {
+      principal_arn = module.human_access[0].platform_engineer_role_arn
+      policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy"
+    }
+    developer = {
+      principal_arn = module.human_access[0].developer_role_arn
+      policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+    }
   } : {}
 }
 
@@ -32,7 +44,7 @@ resource "aws_eks_access_entry" "humans" {
   for_each = local.human_cluster_access
 
   cluster_name  = module.eks.cluster_name
-  principal_arn = each.key
+  principal_arn = each.value.principal_arn
   type          = "STANDARD"
   tags          = local.tags
 }
@@ -41,8 +53,8 @@ resource "aws_eks_access_policy_association" "humans" {
   for_each = local.human_cluster_access
 
   cluster_name  = module.eks.cluster_name
-  principal_arn = each.key
-  policy_arn    = each.value
+  principal_arn = each.value.principal_arn
+  policy_arn    = each.value.policy_arn
 
   access_scope {
     type = "cluster"

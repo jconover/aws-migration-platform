@@ -51,10 +51,10 @@ resource "aws_security_group" "this" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "from_compute" {
-  for_each = toset(var.allowed_security_group_ids)
+  for_each = var.allowed_security_groups
 
   security_group_id            = aws_security_group.this.id
-  description                  = "Postgres from ${each.value}"
+  description                  = "Postgres from ${each.key}"
   referenced_security_group_id = each.value
   from_port                    = 5432
   to_port                      = 5432

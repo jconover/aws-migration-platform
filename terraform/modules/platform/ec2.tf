@@ -31,7 +31,7 @@ module "ec2_rehost" {
 
   database_secret_arn = module.rds.master_user_secret_arn
   database_host       = module.rds.endpoint
-  app_policy_arn      = module.app_policy.policy_arn
+  app_policy_arns     = { app = module.app_policy.policy_arn }
   kms_key_arns        = [module.rds.kms_key_arn]
 
   environment = var.environment

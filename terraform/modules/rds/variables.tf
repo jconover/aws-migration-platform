@@ -18,10 +18,15 @@ variable "subnet_ids" {
   }
 }
 
-variable "allowed_security_group_ids" {
-  description = "Security groups permitted to reach Postgres. Compute identity, not CIDRs."
-  type        = list(string)
-  default     = []
+variable "allowed_security_groups" {
+  description = <<-EOT
+    Security groups permitted to reach Postgres, keyed by a stable name such as
+    "eks_nodes". A map rather than a list because the ids are created in the same
+    apply and are therefore unknown at plan time: for_each keys must be known,
+    values need not be.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "engine_version" {

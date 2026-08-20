@@ -43,9 +43,13 @@ variable "service_account" {
 }
 
 variable "policy_arns" {
-  description = "Customer-managed policy ARNs to attach."
-  type        = list(string)
-  default     = []
+  description = <<-EOT
+    Customer-managed policies to attach, keyed by a stable name. A map because
+    the ARNs are usually created in the same apply and so are unknown at plan
+    time; for_each keys must be known ahead of apply, values need not be.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "inline_policies" {
@@ -98,7 +102,7 @@ resource "aws_iam_role" "this" {
 }
 
 resource "aws_iam_role_policy_attachment" "managed" {
-  for_each = toset(var.policy_arns)
+  for_each = var.policy_arns
 
   role       = aws_iam_role.this.name
   policy_arn = each.value

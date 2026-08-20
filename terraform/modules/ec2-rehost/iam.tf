@@ -36,10 +36,10 @@ resource "aws_iam_role_policy_attachment" "managed" {
 }
 
 resource "aws_iam_role_policy_attachment" "app" {
-  count = var.app_policy_arn != "" ? 1 : 0
+  for_each = var.app_policy_arns
 
   role       = aws_iam_role.instance.name
-  policy_arn = var.app_policy_arn
+  policy_arn = each.value
 }
 
 data "aws_iam_policy_document" "secrets" {

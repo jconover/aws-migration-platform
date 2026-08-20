@@ -57,7 +57,7 @@ module "rds" {
   subnet_ids = module.vpc.data_subnet_ids
 
   # Reachability is granted to the cluster's node security group, not a CIDR.
-  allowed_security_group_ids = [module.eks.node_security_group_id]
+  allowed_security_groups = { eks_nodes = module.eks.node_security_group_id }
 
   engine_version        = var.db_engine_version
   instance_class        = var.db_instance_class
@@ -110,7 +110,7 @@ module "app_irsa" {
   oidc_provider_url = module.eks.oidc_provider_url
   namespace         = var.kubernetes_namespace
   service_account   = var.kubernetes_service_account
-  policy_arns       = [module.app_policy.policy_arn]
+  policy_arns       = { app = module.app_policy.policy_arn }
   tags              = local.tags
 }
 

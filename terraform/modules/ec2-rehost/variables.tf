@@ -100,10 +100,14 @@ variable "database_name" {
   default     = "migration_tracker"
 }
 
-variable "app_policy_arn" {
-  description = "Least-privilege application policy attached to the instance role."
-  type        = string
-  default     = ""
+variable "app_policy_arns" {
+  description = <<-EOT
+    Least-privilege application policies for the instance role, keyed by a stable
+    name. A map rather than an optional string because count cannot depend on a
+    value that is unknown until apply, which a freshly created policy ARN is.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "kms_key_arns" {
