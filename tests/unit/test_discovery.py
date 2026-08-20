@@ -151,3 +151,67 @@ def test_only_the_database_server_is_a_replatform_candidate(servers, connections
     assert portfolio["orders-db-01"] == Strategy.REPLATFORM.value
     assert portfolio["billing-web-01"] == Strategy.REHOST.value
     assert portfolio["jump-host-01"] == Strategy.REHOST.value
+
+
+# ---------------------------------------------------------------------------
+# The real ADS Athena export schema.
+#
+# The fixtures above use the camelCase names the ADS *API* returns. The
+# continuous export to Athena is a different schema: snake_case, inventory
+# split across os_info_agent and sys_performance_agent, and connections
+# recorded between IP addresses rather than server ids. Column names here are
+# the ones AWS publishes in its own predefined queries, and match what
+# migration/athena/ads-export.sql emits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def athena_servers():
+    return parse_servers(read_csv(FIXTURES / "ads-athena-servers.csv"))
+
+
+@pytest.fixture
+def athena_connections():
+    return parse_connections(read_csv(FIXTURES / "ads-athena-connections.csv"))
+
+
+def test_athena_export_hardware_columns_are_mapped(athena_servers):
+    """total_num_cores and total_ram_in_mb are the real names, not numCores."""
+    by_host = {s.hostname: s for s in athena_servers}
+    assert by_host["billing-db-01"].cpu_cores == 8
+    assert by_host["billing-db-01"].memory_mb == 65536
+    assert not any(s.cpu_cores == 0 for s in athena_servers)
+    assert not any(s.memory_mb == 0 for s in athena_servers)
+
+
+def test_athena_export_has_no_owner_column(athena_servers):
+    """Ownership is not in any ADS agent table; it comes from Migration Hub."""
+    assert all(s.owner == "unassigned" for s in athena_servers)
+
+
+def test_frequency_is_the_connection_count(athena_connections):
+    """ADS has no count column - the export aggregates with COUNT(*)."""
+    assert athena_connections[0].connection_count == 48210
+    assert not any(c.connection_count == 1 for c in athena_connections)
+
+
+def test_agent_id_is_not_treated_as_a_connection_source():
+    """agent_id on a connection row is the observer, not the source server.
+
+    Accepting it would attribute every connection a host reported to that host.
+    Both endpoints are IPs in the raw tables and must be resolved by joining
+    network_interface_agent, which ads-export.sql does.
+    """
+    rows = [{"agent_id": "o-observer", "destination_ip": "10.0.0.9", "destination_port": "5432"}]
+    assert parse_connections(rows) == []
+
+
+def test_athena_export_produces_the_same_shape_of_portfolio(
+    athena_servers, athena_connections
+):
+    portfolio = build_portfolio(athena_servers, athena_connections)
+    assert len(portfolio) == len(athena_servers)
+    by_name = {e.name: e for e in portfolio}
+    assert by_name["billing-db-01"].strategy == Strategy.REPLATFORM.value
+    assert by_name["legacy-fax-01"].strategy == Strategy.RETIRE.value
+    assert by_name["billing-web-01"].wave > by_name["legacy-fax-01"].wave

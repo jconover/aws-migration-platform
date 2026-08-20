@@ -14,17 +14,25 @@ convenient batch of servers owned by the same team.
 
 Input contract
 --------------
-Two tables, however you export them. Column names below are what this module
-expects; the mapping from an ADS Athena export lives in ``SERVER_FIELDS`` and
-``CONNECTION_FIELDS`` so it can be adjusted in one place when the export schema
-differs by ADS version:
+Two tables, however you export them:
 
   servers.csv      server_id, hostname, os_name, cpu_cores, memory_mb, owner
   connections.csv  source_id, destination_id, destination_port, connection_count
 
-Produce them with either:
-  aws discovery list-configurations --configuration-type SERVER
-  or an Athena query over the ADS continuous export in S3.
+``SERVER_FIELDS`` and ``CONNECTION_FIELDS`` map real export column names onto
+those, so a schema change is one edit here rather than a rewrite of the parsing.
+
+Produce the two files with ``migration/athena/ads-export.sql`` against the ADS
+continuous export, or with ``aws discovery list-configurations
+--configuration-type SERVER`` for the API's camelCase shape.
+
+The connections table is the part that needs real work: ADS records connections
+between IP addresses, not between server ids, so both endpoints have to be
+resolved by joining ``network_interface_agent``. The SQL does that.
+
+Application Discovery Service closed to new customers on 7 November 2025.
+AWS Transform is the successor, and its export schema differs from the one
+mapped here.
 """
 
 from __future__ import annotations
@@ -39,23 +47,46 @@ from pathlib import Path
 
 from app.models import Strategy
 
-# Mapping from export column names to this module's field names. ADS Athena
-# exports vary between versions, so keep every rename here rather than scattered
-# through the parsing code.
+# Mapping from export column names to this module's field names. Keep every
+# rename here rather than scattered through the parsing code.
+#
+# Two different schemas are covered, because they genuinely differ:
+#
+#   Athena continuous export - snake_case, and the names AWS publishes in its
+#   own predefined queries: agent_id, host_name, os_name, total_num_cores,
+#   total_ram_in_mb. Produce the two files with migration/athena/ads-export.sql.
+#
+#   ADS API (list-configurations) and Migration Hub import - camelCase:
+#   configurationId, hostName, numCores, totalRamInMB.
+#
+# Deliberately absent: there is no "agent_id" candidate for source_id. On the
+# connection tables agent_id is the agent that observed the connection, not the
+# source server, so accepting it would silently attribute every connection a
+# host reported to that host. Both endpoints are IP addresses and have to be
+# resolved to servers by joining network_interface_agent - see the SQL.
 SERVER_FIELDS = {
-    "server_id": ("server_id", "configurationid", "configuration_id", "agent_id"),
-    "hostname": ("hostname", "host_name", "server.hostname", "name"),
-    "os_name": ("os_name", "os.name", "osname", "server.osname"),
-    "cpu_cores": ("cpu_cores", "numcores", "num_cores", "server.numcpus"),
-    "memory_mb": ("memory_mb", "totalraminmb", "total_ram_mb", "server.totalram"),
+    "server_id": ("server_id", "agent_id", "configurationid", "configuration_id"),
+    "hostname": ("hostname", "host_name", "hostname", "name"),
+    "os_name": ("os_name", "osname", "os.name"),
+    "cpu_cores": ("cpu_cores", "total_num_cores", "numcores", "num_cores", "total_num_cpus"),
+    "memory_mb": ("memory_mb", "total_ram_in_mb", "totalraminmb", "total_ram_mb"),
+    # No ADS agent table carries ownership. It comes from a Migration Hub
+    # application grouping or a CMDB, joined in separately.
     "owner": ("owner", "application", "tag_owner", "business_unit"),
 }
 
 CONNECTION_FIELDS = {
-    "source_id": ("source_id", "sourceserverid", "source_server_id", "agent_id"),
-    "destination_id": ("destination_id", "destinationserverid", "destination_server_id"),
+    "source_id": ("source_id", "source_agent_id", "sourceserverid", "source_server_id"),
+    "destination_id": (
+        "destination_id",
+        "destination_agent_id",
+        "destinationserverid",
+        "destination_server_id",
+    ),
     "destination_port": ("destination_port", "destinationport", "port"),
-    "connection_count": ("connection_count", "count", "connections"),
+    # ADS has no count column - each row is one observed connection, so the
+    # export aggregates with COUNT(*), which AWS aliases as "frequency".
+    "connection_count": ("connection_count", "frequency", "count", "connections"),
 }
 
 # Ports that identify a server as backing something else rather than being a
