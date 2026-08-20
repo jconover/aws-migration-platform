@@ -261,6 +261,39 @@ kubectl get nodes
 If this returns `Unauthorized`, you skipped `cluster_admin_role_arns` in Step 2.
 Fix it there and re-apply rather than hand-editing access entries.
 
+**If instead you get `no such host`, nothing is broken.** The API endpoint is
+private, so its hostname resolves only through a Route 53 private hosted zone
+inside the VPC. From a laptop, DNS simply has no answer. Confirm the cluster is
+healthy without kubectl:
+
+```bash
+aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
+  --query 'cluster.{status:status,public:resourcesVpcConfig.endpointPublicAccess}'
+```
+
+`ACTIVE` with `public: false` is a correct, working cluster.
+
+This is the same property as RDS being unreachable, and it is deliberate:
+operators reach a production cluster over Direct Connect or VPN, never from the
+internet. A demo account has no hybrid link, so for a short test you can open the
+endpoint to your own address only — **demo only, never production**:
+
+```bash
+MY_IP=$(curl -s https://checkip.amazonaws.com)
+cat >> terraform.tfvars <<EOF
+eks_endpoint_public_access       = true
+eks_endpoint_public_access_cidrs = ["${MY_IP}/32"]
+EOF
+terraform apply    # ~2 minutes, endpoint configuration only
+```
+
+`terraform.tfvars` is gitignored, so the address never reaches the repository, and
+a validation rule rejects `0.0.0.0/0`. Remove the lines when you are done.
+
+The real answer in a migration is that this situation should not arise: hybrid
+connectivity is on the critical path from week one precisely so operators never
+need a public endpoint.
+
 ### The rehost instances came up
 
 ```bash
