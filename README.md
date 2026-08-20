@@ -139,7 +139,7 @@ Everything below was executed against this repository, not assumed.
 | `actionlint` (with shellcheck) | 0 findings across 5 workflows |
 | Kustomize overlays | staging and prod render, 11 resources each |
 | Container | builds, runs healthy, serves traffic as UID 10001 |
-| CI on GitHub Actions | **all 21 jobs green** in 1 min 57 s |
+| CI on GitHub Actions | **green**, in about 80 s; job count varies with path filters, so a docs-only change runs 12 and skips 5 |
 | CD on GitHub Actions | skips by design when no AWS environment is configured, rather than failing against absent infrastructure |
 | **Applied to live AWS** | staging stack applied in us-east-1, then destroyed |
 | **Migration on real RDS** | 20 rows moved from bare-metal Talos; gate caught a silent field edit and a deleted row |
