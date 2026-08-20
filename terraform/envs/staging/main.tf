@@ -56,6 +56,28 @@ variable "cluster_admin_role_arns" {
   default     = []
 }
 
+variable "eks_endpoint_public_access" {
+  description = <<-EOT
+    Expose the Kubernetes API publicly. The cluster is private by default, which
+    means kubectl only works from inside the VPC - over Direct Connect or VPN in
+    a real environment. Set true in a demo account where no hybrid link exists,
+    and always pair it with eks_endpoint_public_access_cidrs.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "eks_endpoint_public_access_cidrs" {
+  description = "CIDRs allowed to reach a public API endpoint. Set this in terraform.tfvars, which is gitignored."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = !contains(var.eks_endpoint_public_access_cidrs, "0.0.0.0/0")
+    error_message = "0.0.0.0/0 defeats the point of a private endpoint. Use your own address as a /32."
+  }
+}
+
 module "platform" {
   source = "../../modules/platform"
 
@@ -66,6 +88,11 @@ module "platform" {
   single_nat_gateway      = true
 
   kubernetes_version = "1.35"
+
+  # Private by default. Override in terraform.tfvars - which is gitignored, so a
+  # home or office address never reaches the repository.
+  eks_endpoint_public_access       = var.eks_endpoint_public_access
+  eks_endpoint_public_access_cidrs = var.eks_endpoint_public_access_cidrs
 
   node_groups = {
     general = {

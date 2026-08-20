@@ -2,3 +2,15 @@ region                  = "us-east-1"
 artifact_bucket_name    = "migration-tracker-staging-artifacts-1234567890"
 github_repository       = "example-org/migration-tracker"
 cluster_admin_role_arns = ["arn:aws:iam::111122223333:role/PlatformEngineers"]
+
+# Reaching the Kubernetes API from outside the VPC.
+#
+# The cluster is private by default; kubectl only works from inside the VPC. In a
+# demo account with no VPN or Direct Connect, open it to your own address only:
+#
+#   MY_IP=$(curl -s https://checkip.amazonaws.com)
+#   echo "eks_endpoint_public_access       = true"
+#   echo "eks_endpoint_public_access_cidrs = [\"${MY_IP}/32\"]"
+#
+# Put those two lines in terraform.tfvars, never here - this file is committed,
+# terraform.tfvars is not. 0.0.0.0/0 is rejected by a validation rule.
