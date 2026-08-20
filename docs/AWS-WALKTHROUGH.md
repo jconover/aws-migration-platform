@@ -200,6 +200,24 @@ strands state and makes the teardown in Step 11 much harder.
 
 ---
 
+## Reading the environment later
+
+Terraform already knows every endpoint, ARN and name, so there is no reason to
+copy them somewhere they will go stale:
+
+```bash
+./scripts/env-info.sh                 # staging, plus the commands that use it
+./scripts/env-info.sh staging export  # shell exports, for eval
+./scripts/env-info.sh staging tunnel  # open the SSM port-forward to RDS
+./scripts/env-info.sh staging dsn     # TARGET_DSN, including the password
+```
+
+`dsn` is separate from `show` on purpose: it reads the database password out of
+Secrets Manager, and that should never appear just because someone wanted an
+endpoint.
+
+---
+
 ## Step 6 — Verify each layer
 
 ```bash
