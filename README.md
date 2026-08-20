@@ -222,10 +222,27 @@ current default cannot pass the health check, which is documented in
 hosted zone is a small change and closes the gap between "listens on 443" and
 "serves TLS".
 
-**Move discovery to AWS Transform.** Application Discovery Service closed to new
-customers in November 2025. The wave-planning logic is schema-agnostic; only the
-mapping layer and the export query would change. Doing it would prove the
-abstraction holds.
+**Move discovery to AWS Transform, and let it size the rehost target.**
+Application Discovery Service closed to new customers in November 2025. The
+wave-planning logic is schema-agnostic; only the mapping layer and the export
+query would change, so doing it would prove the abstraction holds. The second
+half matters more: Transform's assessment output - observed CPU, memory and
+connection data per server - is what should drive the EC2 rehost sizing and the
+Auto Scaling group's min/max/desired. Today those are guesses in
+`terraform.tfvars`, and [docs/ASG-CHURN.md](docs/ASG-CHURN.md) is what guessing
+looks like when the guess is wrong.
+
+**Build the estate with Ansible instead of shell.** Two places run imperative
+bash today: `migration/scripts/onprem-vm.sh` installs and configures Postgres on
+the VM source, and `terraform/modules/ec2-rehost/user_data.sh.tftpl` configures
+each rehosted instance at boot. Both are the wrong tool - neither is idempotent,
+neither reports drift, and user-data only runs once, so a configuration change
+means replacing the instance. Ansible playbooks for both would build the source
+estate and configure the rehost target the way a migration team actually does
+it, and would let the same roles run against the on-premises VMs before the move
+and the EC2 instances after it. That symmetry is the point: proving a workload
+is configured identically on both sides is most of what a cutover rehearsal is
+for.
 
 **Right-size against real demand.** Everything here is sized by guess. Two weeks
 of CloudWatch data, then Savings Plans, is the post-migration work the backlog
