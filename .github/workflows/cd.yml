@@ -188,7 +188,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'ecs' || github.event.inputs.target == 'both')
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ github.event.inputs.environment }}
+    # Falls back to staging: on a push event github.event.inputs is null, and an
+    # empty environment name is not a valid job key even though the `if` above
+    # skips this job. terraform.yml uses the same fallback.
+    environment: ${{ github.event.inputs.environment || 'staging' }}
     permissions:
       contents: read
       id-token: write
