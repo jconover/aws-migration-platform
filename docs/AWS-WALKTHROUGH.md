@@ -34,6 +34,37 @@ traffic simply routes over the NAT gateway instead.
 
 ---
 
+## Local tools
+
+Install these before starting. Two of them are only needed at Step 9, but that
+is 40 minutes in and a poor moment to discover they are missing.
+
+| Tool | Needed for | macOS |
+| --- | --- | --- |
+| `terraform` ≥ 1.15 | everything | `brew install terraform` |
+| `aws` CLI v2 | everything | `brew install awscli` |
+| `session-manager-plugin` | the SSM tunnel to private RDS (Step 9) | `brew install --cask session-manager-plugin` |
+| `psql` | restoring the dump into RDS (Step 9) | `brew install libpq && brew link --force libpq` |
+| `kubectl` | verifying the cluster (Step 6) | `brew install kubectl` |
+| `helm` | cluster prerequisites (Step 7) | `brew install helm` |
+| `jq` | reading the database secret (Step 9) | `brew install jq` |
+
+None of these install or manage virtual machines. `psql` is a database client
+and `session-manager-plugin` is a transport for `aws ssm start-session`. The EC2
+instances in this stack are created by Terraform, run Amazon Linux 2023, and are
+the landing target for lift-and-shift workloads — in Step 9 one of them also
+serves as the hop that reaches RDS, since RDS has no route to the internet.
+
+Verify in one line:
+
+```bash
+for t in terraform aws session-manager-plugin psql kubectl helm jq; do
+  command -v "$t" >/dev/null && echo "ok   $t" || echo "MISSING $t"
+done
+```
+
+---
+
 ## Step 0 — Preflight
 
 Run these four before anything else. The results below are from a real
